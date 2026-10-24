@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -114,9 +115,10 @@ func (s *Server) favicon(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
-// dnsSessionPath checks each decoded path prefix before dot-segment removal.
-// Checking only path.Clean loses bearers in e.g. /v1//dnsleak/token/../../sources.
-func dnsSessionPath(p string) bool {
+// dnsSessionPath checks every prefix, including ones later removed by "..".
+// In the escaped view, clean literal dot segments before unescaping each segment,
+// as ServeMux does: an encoded slash must not change how many segments ".." pops.
+func dnsSessionPath(p string, escaped bool) bool {
 	var stack []string
 	for _, segment := range strings.Split(p, "/") {
 		switch segment {
@@ -127,6 +129,11 @@ func dnsSessionPath(p string) bool {
 				stack = stack[:len(stack)-1]
 			}
 		default:
+			if escaped {
+				// EscapedPath always supplies valid escapes. Do not split or clean
+				// again after decoding: mux matching unescapes segments only once.
+				segment, _ = url.PathUnescape(segment)
+			}
 			stack = append(stack, segment)
 		}
 		if len(stack) >= 2 && stack[0] == "v1" && stack[1] == "dnsleak" {
@@ -137,9 +144,9 @@ func dnsSessionPath(p string) bool {
 }
 
 func (s *Server) note(r *http.Request) {
-	// URL.Path has already been percent-decoded by net/http. Do not persist any
-	// prefix that entered the sensitive namespace, even if later segments leave it.
-	if dnsSessionPath(r.URL.Path) {
+	// Retain the conservative decoded-path protection, and also inspect mux's
+	// escaped-segment view before logging (including redirects and rejected verbs).
+	if dnsSessionPath(r.URL.Path, false) || dnsSessionPath(r.URL.EscapedPath(), true) {
 		return
 	}
 

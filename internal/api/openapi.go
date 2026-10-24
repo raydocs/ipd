@@ -160,7 +160,7 @@ func paths() map[string]any {
 			case "id":
 				desc = "Identifier; on GET watch the value is required by routing but ignored by the implementation."
 			case "token":
-				desc = "Token echoed into the DNS report; not an asynchronous token lookup."
+				desc = "A short-lived bearer capability for lookup of this DNS session's observations; expires after two minutes. Keep private; not echoed in the report."
 			case "asset", "path":
 				desc = "Remaining subtree path, potentially containing slashes; delegated handler semantics apply."
 			}
