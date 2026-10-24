@@ -56,8 +56,8 @@ func TestClaudeBlockedAndNetflixOriginals(t *testing.T) {
 		t.Fatal(got[0])
 	}
 	e2 := &Engine{Get: fx{
-		"https://www.netflix.com/title/81280792": {Status: 200, Body: "play"},
-		"https://www.netflix.com/title/70143836": {Status: 200, Body: "title not available"},
+		"https://www.netflix.com/title/81280792": {Status: 200, Body: `{"isPlayable":true}`, FinalURL: "https://www.netflix.com/title/81280792"},
+		"https://www.netflix.com/title/70143836": {Status: 200, Body: "title not available in your country", FinalURL: "https://www.netflix.com/title/70143836"},
 	}}
 	nf := e2.Check(context.Background(), []string{"netflix"})
 	if nf[0].Status != OriginalsOnly {
@@ -77,9 +77,9 @@ func TestTikTokIDCNeedsGzip(t *testing.T) {
 	// default fixture adds region only when the map misses. Force both calls empty then gzip.
 	e.Get = getterFunc(func(rawURL string, headers map[string]string) Response {
 		if headers["Accept-Encoding"] == "gzip" {
-			return Response{Status: 200, Body: `"region":"US"`}
+			return Response{Status: 200, Body: `"region":"US"`, FinalURL: rawURL}
 		}
-		return Response{Status: 200, Body: "no region here"}
+		return Response{Status: 200, Body: "no region here", FinalURL: rawURL}
 	})
 	got := e.Check(context.Background(), []string{"tiktok"})
 	if got[0].Status != IDC {

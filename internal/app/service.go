@@ -804,58 +804,59 @@ func (s *Service) Unlock(ctx context.Context, ids []string) Report {
 		return Report{Verdict: "abstain", Summary: "unlock engine missing", Data: map[string]any{"results": []any{}}, Sources: []Source{}}
 	}
 	res := s.Checks.Check(ctx, ids)
-	bad := 0
+	unavailable, unknown, limited := 0, 0, 0
 	for _, r := range res {
-		if r.Status == unlock.No || r.Status == unlock.ErrStatus {
-			bad++
+		switch r.Status {
+		case unlock.Yes:
+		case unlock.No:
+			unavailable++
+		case unlock.Partial, unlock.OriginalsOnly, unlock.AppOnly, unlock.WebOnly, unlock.IDC:
+			limited++
+		default:
+			unknown++
 		}
 	}
 	v := "ok"
-	if bad > 0 && bad < len(res) {
+	switch {
+	case len(res) == 0 || unknown > 0:
+		v = "abstain"
+	case unavailable == len(res):
+		v = "blocked"
+	case unavailable > 0 || limited > 0:
 		v = "ok_with_caveats"
 	}
-	if len(res) > 0 && bad == len(res) {
-		v = "blocked"
-	}
-	return Report{Verdict: v, Summary: fmt.Sprintf("%d services, %d unavailable", len(res), bad), Data: map[string]any{"results": res}, Sources: []Source{{ID: "unlock"}}, CachedAt: s.now()}
+	return Report{Verdict: v, Summary: fmt.Sprintf("%d services, %d unavailable, %d limited, %d unknown", len(res), unavailable, limited, unknown), Data: map[string]any{"results": res}, Sources: []Source{{ID: "unlock"}}, CachedAt: s.now()}
 }
 
 // GoogleRegion is the egress-side 送中 check.
 func (s *Service) GoogleRegion(ctx context.Context) Report {
-	u := s.Checks
-	if u == nil {
-		return Report{Verdict: "abstain", Summary: "no unlock client", Data: map[string]any{"sent_to_china": false}, Sources: []Source{}}
+	data := map[string]any{"sent_to_china": nil, "google_tld": "", "youtube_gl": "", "play_region": ""}
+	report := Report{Verdict: "abstain", Summary: "Google region unknown: insufficient evidence", Data: data, Sources: []Source{}, CachedAt: s.now()}
+	if s.Checks == nil {
+		return report
 	}
-	res := u.Check(ctx, []string{"google_region", "youtube_premium"})
-	sent := false
-	tld, gl, play := "", "", ""
+	res := s.Checks.Check(ctx, []string{"google_region"})
+	data["results"] = res
+	report.Sources = []Source{{ID: "google"}}
 	for _, r := range res {
-		if r.Service == "google_region" && strings.Contains(r.Evidence, "sent_to_china=true") {
-			sent = true
+		if r.Service != "google_region" || (r.Status != unlock.Yes && r.Status != unlock.No) {
+			continue
 		}
-		if strings.Contains(r.Evidence, "google.cn") {
-			tld = "google.cn"
-			sent = true
-		} else if strings.Contains(r.Evidence, "google.com.hk") {
-			tld = "google.com.hk"
-			sent = true
-		} else if tld == "" {
-			tld = "google.com"
+		sent := unlock.SentToChina(r)
+		data["sent_to_china"] = sent
+		data["google_tld"] = r.GoogleTLD
+		data["youtube_gl"] = r.YouTubeGL
+		data["play_region"] = r.PlayRegion
+		report.Verdict = "ok"
+		if sent {
+			report.Verdict = "risky"
 		}
-		if r.Region != "" && gl == "" {
-			gl = r.Region
+		report.Summary = "Google region evidence does not indicate mainland China"
+		if sent {
+			report.Summary = "Google region evidence indicates mainland China (送中)"
 		}
 	}
-	v := "ok"
-	if sent {
-		v = "risky"
-	}
-	return Report{
-		Verdict: v,
-		Summary: gfw.ExplainWallVsSent("ok", sent),
-		Data:    map[string]any{"sent_to_china": sent, "google_tld": tld, "youtube_gl": gl, "play_region": play},
-		Sources: []Source{{ID: "google"}}, CachedAt: s.now(),
-	}
+	return report
 }
 
 // AIEnv is the P1 verdict.
