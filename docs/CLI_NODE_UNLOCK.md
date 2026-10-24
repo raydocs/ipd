@@ -129,3 +129,44 @@ faults, not guessed sleeps. All fixtures are loopback-only; no public measuremen
 
 The original missing-API blocker is now addressed by authorized PR27 integration,
 not by weakening its requirement. Author checks below are not independent review.
+
+## Latest author checks (Darwin, frozen code a1d5eee)
+
+Code head: `a1d5eeee4f5aaa95bec90b1ab1207a8d2bbf08d9`; the following evidence-only
+commit changes no code. Latest fetched/synchronized main at check time remains
+`3a0832284585118d473a7fd08fb4c924831f760b`; future integration must re-fetch.
+
+- Actual unwired checkpoint revocation regression: **FAIL**, both backends;
+  `before-wire.log`. After wiring the whole regression **PASS** (6.470s), keeping
+  the lose-owner positive/unknown/cleanup/2s assertions. Final race includes it.
+- `go test -race -p 1 ./internal/app ./internal/cli -run '^TestCore(Node|Handle|Client)' -count=1`:
+  **PASS**, app 66.418s, CLI 2.252s, no race diagnostic. Includes old egress/native
+  identity/address regressions and all new app capability/transport tests.
+- Plain `go test -p 1 ./... -count=1`: **FAIL (environment)** at nodes helper link:
+  `mapping output file failed: no space left on device`. App (64.449s), CLI,
+  pow and every other tested package passed; nodes tests could not build their
+  shared fixture. This failed attempt is retained, not called green.
+- One bounded low-disk retry, without deleting anyone's files/cache:
+  `GOFLAGS='-ldflags=-w' go test -p 1 ./... -count=1`: **PASS all packages**,
+  app 64.466s, nodes 37.971s, CLI 4.607s. `-w` omits DWARF debug information only;
+  no test logic, expected value, production budget or runner code changed.
+- `node --test web/judge.test.mjs`: **PASS**, 1 test.
+- Owned detached checkout at the same code head + exact PR22 `a25cced` via
+  `git apply --3way --index`: **PASS**, `go test -p 1 ./internal/cli -count=1`
+  (4.798s). Patch applied cleanly; no PR22 ancestry/code was added here. Only that
+  checkout's own patch was restored; the owned detached checkout was then removed.
+- `git diff --check`: **PASS**. Diff against approved `f698099` in
+  `internal/nodes` is empty; shared `internal/unlock` and HTTP/MCP code unchanged.
+
+Parent reported a first candidate pow random-negative flake before author wiring;
+that historical report remains a residual test-flakiness note, not erased by our
+later pow passes. No pow code/test was modified. Parent's prior runner review and
+candidate checks are context, not substitutes for app/CLI independent review.
+
+Raw logs are retained in `/tmp/ipd-pr26-handle-evidence/`:
+`before-wire.log`, `after-wire-first.log`, `after-wire-regression.log`,
+`final-narrow-race.log`, `final-full-go.log`, `final-full-go-lowdisk-retry.log`,
+`final-node.log`, `final-compose22.log`. Historical PR25/PR26 failure logs from the
+first round remain at the previously recorded `/tmp/ipd-unlock-*.log` paths.
+No Linux runtime, real core/airport, account/login/playback, deployment, merge or
+self-acceptance is claimed. Parent full app/CLI independent review is outstanding.
