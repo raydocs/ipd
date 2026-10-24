@@ -7,9 +7,11 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -221,25 +223,104 @@ func flagOf(region string) string {
 	return "·"
 }
 
-// RenameYAML rewrites proxy names and keeps the count and other fields.
+// RenameYAML rewrites proxy names and proxy-group members without mutating f.
+// Generated names get deterministic suffixes when they collide with existing
+// targets. Ambiguous source names cannot be safely rewritten and return an error.
 func RenameYAML(f File, outcomes []Outcome) (string, error) {
 	byName := map[string]string{}
 	for _, o := range outcomes {
 		byName[o.Name] = o.Renamed
 	}
+	reserved := map[string]bool{
+		"DIRECT": true, "REJECT": true, "REJECT-DROP": true,
+		"PASS": true, "COMPATIBLE": true, "GLOBAL": true,
+	}
+	used := maps.Clone(reserved)
+	for name := range byName {
+		// A generated name must not become another outcome's source on replay.
+		used[name] = true
+	}
+	groupNames := map[string]bool{}
+	groups, _ := f.Raw["proxy-groups"].([]any)
+	for _, item := range groups {
+		g, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := str(g["name"])
+		groupNames[name], used[name] = true, true
+		members, _ := g["proxies"].([]any)
+		for _, member := range members {
+			if name, ok := member.(string); ok {
+				// Provider/external targets must not be shadowed either.
+				used[name] = true
+			}
+		}
+	}
 	proxies, _ := f.Raw["proxies"].([]any)
+	counts := map[string]int{}
 	for _, item := range proxies {
+		if p, ok := item.(map[string]any); ok {
+			name := str(p["name"])
+			counts[name]++
+			used[name] = true
+		}
+	}
+	renames := map[string]string{}
+	proxies = slices.Clone(proxies)
+	for i, item := range proxies {
 		m, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		if n, ok := byName[str(m["name"])]; ok && n != "" {
-			m["name"] = n
+		old := str(m["name"])
+		requested := byName[old]
+		if requested == "" || requested == old {
+			continue
 		}
+		if counts[old] > 1 || reserved[old] || groupNames[old] {
+			return "", fmt.Errorf("cannot rename ambiguous proxy name %q", old)
+		}
+		name := requested
+		for suffix := 2; used[name]; suffix++ {
+			name = fmt.Sprintf("%s (%d)", requested, suffix)
+		}
+		used[name] = true
+		renames[old] = name
+		m = maps.Clone(m)
+		m["name"] = name
+		proxies[i] = m
 	}
-	// Also rename proxy groups that reference old names is intentionally left;
-	// the proxy entries themselves keep a stable count.
-	b, err := yaml.Marshal(f.Raw)
+	groups = slices.Clone(groups)
+	for i, item := range groups {
+		g, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		members, ok := g["proxies"].([]any)
+		if !ok {
+			continue
+		}
+		members = slices.Clone(members)
+		for j, member := range members {
+			if old, ok := member.(string); ok {
+				if name, ok := renames[old]; ok {
+					members[j] = name
+				}
+			}
+		}
+		g = maps.Clone(g)
+		g["proxies"] = members
+		groups[i] = g
+	}
+	doc := maps.Clone(f.Raw)
+	if _, ok := doc["proxies"].([]any); ok {
+		doc["proxies"] = proxies
+	}
+	if _, ok := doc["proxy-groups"].([]any); ok {
+		doc["proxy-groups"] = groups
+	}
+	b, err := yaml.Marshal(doc)
 	return string(b), err
 }
 
