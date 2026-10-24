@@ -83,12 +83,33 @@ type Profile struct {
 	Prefix         string
 	Reserved       bool
 	Disagreements  []Disagreement
+	Conflicts      []Conflict
+	Anycast        bool
 }
 
 // Disagreement records a field where sources do not agree.
 type Disagreement struct {
 	Field  string         `json:"field"`
 	Values map[string]any `json:"values"`
+}
+
+// Vote is one source's weighted value inside a conflict.
+type Vote struct {
+	Source string  `json:"source"`
+	Value  string  `json:"value"`
+	Weight float64 `json:"weight"`
+}
+
+// Conflict is the explicit disagreement section. Anycast prefixes are included
+// even when every geo source happens to agree, because agreement on a country
+// is not evidence for an anycast address.
+type Conflict struct {
+	Field        string  `json:"field"`
+	Chosen       string  `json:"chosen"`
+	ChosenWeight float64 `json:"chosen_weight"`
+	Anycast      bool    `json:"anycast,omitempty"`
+	Note         string  `json:"note,omitempty"`
+	Votes        []Vote  `json:"votes"`
 }
 
 // HasFlag reports whether the merged profile carries a flag.

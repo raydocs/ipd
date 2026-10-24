@@ -1,0 +1,124 @@
+{
+  "cases": [
+    {
+      "name": "ok",
+      "want": "ok",
+      "ports": [22, 443],
+      "obs": [
+        {"id": "ct-1", "network": "ct", "asn": 4134, "city": "Shanghai", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "ct-2", "network": "ct", "asn": 4812, "city": "Guangzhou", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cu-1", "network": "cu", "asn": 4837, "city": "Beijing", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cu-2", "network": "cu", "asn": 4837, "city": "Tianjin", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cm-1", "network": "cm", "asn": 9808, "city": "Hangzhou", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cm-2", "network": "cm", "asn": 9808, "city": "Nanjing", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "ctl", "network": "control", "asn": 15169, "city": "Ashburn", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"}
+      ]
+    },
+    {
+      "name": "ip_blocked",
+      "want": "ip_blocked",
+      "ports": [22, 443],
+      "obs": [
+        {"id": "ct-1", "network": "ct", "asn": 4134, "city": "Shanghai", "healthy": true, "icmp": "timeout", "loss": 1, "tcp": {"22": "timeout", "443": "timeout"}},
+        {"id": "ct-2", "network": "ct", "asn": 4812, "city": "Guangzhou", "healthy": true, "icmp": "timeout", "loss": 1, "tcp": {"22": "timeout", "443": "timeout"}},
+        {"id": "cu-1", "network": "cu", "asn": 4837, "city": "Beijing", "healthy": true, "icmp": "timeout", "loss": 1, "tcp": {"22": "timeout", "443": "timeout"}},
+        {"id": "cu-2", "network": "cu", "asn": 4837, "city": "Tianjin", "healthy": true, "icmp": "timeout", "loss": 1, "tcp": {"22": "timeout", "443": "timeout"}},
+        {"id": "cm-1", "network": "cm", "asn": 9808, "city": "Hangzhou", "healthy": true, "icmp": "timeout", "loss": 1, "tcp": {"22": "timeout", "443": "timeout"}},
+        {"id": "cm-2", "network": "cm", "asn": 9808, "city": "Nanjing", "healthy": true, "icmp": "timeout", "loss": 1, "tcp": {"22": "timeout", "443": "timeout"}},
+        {"id": "ctl", "network": "control", "asn": 15169, "city": "Ashburn", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"}
+      ]
+    },
+    {
+      "name": "port_blocked",
+      "want": "port_blocked",
+      "ports": [22, 443],
+      "obs": [
+        {"id": "ct-1", "network": "ct", "asn": 4134, "city": "Shanghai", "healthy": true, "icmp": "ok", "tcp": {"22": "timeout", "443": "ok"}, "sni": "ok"},
+        {"id": "ct-2", "network": "ct", "asn": 4812, "city": "Guangzhou", "healthy": true, "icmp": "ok", "tcp": {"22": "timeout", "443": "ok"}, "sni": "ok"},
+        {"id": "cu-1", "network": "cu", "asn": 4837, "city": "Beijing", "healthy": true, "icmp": "ok", "tcp": {"22": "timeout", "443": "ok"}, "sni": "ok"},
+        {"id": "cu-2", "network": "cu", "asn": 4837, "city": "Tianjin", "healthy": true, "icmp": "ok", "tcp": {"22": "timeout", "443": "ok"}, "sni": "ok"},
+        {"id": "cm-1", "network": "cm", "asn": 9808, "city": "Hangzhou", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cm-2", "network": "cm", "asn": 9808, "city": "Nanjing", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "ctl", "network": "control", "asn": 15169, "city": "Ashburn", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"}
+      ]
+    },
+    {
+      "name": "carrier_partial",
+      "want": "carrier_partial",
+      "ports": [22, 443],
+      "obs": [
+        {"id": "ct-1", "network": "ct", "asn": 4134, "city": "Shanghai", "healthy": true, "icmp": "timeout", "loss": 1, "tcp": {"22": "timeout", "443": "timeout"}},
+        {"id": "ct-2", "network": "ct", "asn": 4812, "city": "Guangzhou", "healthy": true, "icmp": "timeout", "loss": 1, "tcp": {"22": "timeout", "443": "timeout"}},
+        {"id": "cu-1", "network": "cu", "asn": 4837, "city": "Beijing", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cu-2", "network": "cu", "asn": 4837, "city": "Tianjin", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cm-1", "network": "cm", "asn": 9808, "city": "Hangzhou", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cm-2", "network": "cm", "asn": 9808, "city": "Nanjing", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "ctl", "network": "control", "asn": 15169, "city": "Ashburn", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"}
+      ]
+    },
+    {
+      "name": "dns_poisoned",
+      "want": "dns_poisoned",
+      "ports": [22, 443],
+      "obs": [
+        {"id": "ct-1", "network": "ct", "asn": 4134, "city": "Shanghai", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "dns_addrs": ["4.36.66.178"], "sni": "ok"},
+        {"id": "ct-2", "network": "ct", "asn": 4812, "city": "Guangzhou", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "dns_addrs": ["4.36.66.178"], "sni": "ok"},
+        {"id": "cu-1", "network": "cu", "asn": 4837, "city": "Beijing", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cu-2", "network": "cu", "asn": 4837, "city": "Tianjin", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cm-1", "network": "cm", "asn": 9808, "city": "Hangzhou", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cm-2", "network": "cm", "asn": 9808, "city": "Nanjing", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "ctl", "network": "control", "asn": 15169, "city": "Ashburn", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "dns_addrs": ["1.1.1.1"], "sni": "ok"}
+      ]
+    },
+    {
+      "name": "sni_reset",
+      "want": "sni_reset",
+      "ports": [22, 443],
+      "obs": [
+        {"id": "ct-1", "network": "ct", "asn": 4134, "city": "Shanghai", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "reset"},
+        {"id": "ct-2", "network": "ct", "asn": 4812, "city": "Guangzhou", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "reset"},
+        {"id": "cu-1", "network": "cu", "asn": 4837, "city": "Beijing", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "reset"},
+        {"id": "cu-2", "network": "cu", "asn": 4837, "city": "Tianjin", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "reset"},
+        {"id": "cm-1", "network": "cm", "asn": 9808, "city": "Hangzhou", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cm-2", "network": "cm", "asn": 9808, "city": "Nanjing", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "ctl", "network": "control", "asn": 15169, "city": "Ashburn", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"}
+      ]
+    },
+    {
+      "name": "congested",
+      "want": "congested",
+      "ports": [22, 443],
+      "obs": [
+        {"id": "ct-1", "network": "ct", "asn": 4134, "city": "Shanghai", "healthy": true, "icmp": "ok", "loss": 0.4, "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "ct-2", "network": "ct", "asn": 4812, "city": "Guangzhou", "healthy": true, "icmp": "ok", "loss": 0.4, "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cu-1", "network": "cu", "asn": 4837, "city": "Beijing", "healthy": true, "icmp": "ok", "loss": 0.3, "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cu-2", "network": "cu", "asn": 4837, "city": "Tianjin", "healthy": true, "icmp": "ok", "loss": 0.3, "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cm-1", "network": "cm", "asn": 9808, "city": "Hangzhou", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "cm-2", "network": "cm", "asn": 9808, "city": "Nanjing", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"},
+        {"id": "ctl", "network": "control", "asn": 15169, "city": "Ashburn", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}, "sni": "ok"}
+      ]
+    },
+    {
+      "name": "target_down",
+      "want": "target_down",
+      "ports": [22, 443],
+      "obs": [
+        {"id": "ct-1", "network": "ct", "asn": 4134, "city": "Shanghai", "healthy": true, "icmp": "timeout", "loss": 1, "tcp": {"22": "timeout", "443": "timeout"}},
+        {"id": "ct-2", "network": "ct", "asn": 4812, "city": "Guangzhou", "healthy": true, "icmp": "timeout", "loss": 1, "tcp": {"22": "timeout", "443": "timeout"}},
+        {"id": "cu-1", "network": "cu", "asn": 4837, "city": "Beijing", "healthy": true, "icmp": "timeout", "loss": 1, "tcp": {"22": "timeout", "443": "timeout"}},
+        {"id": "cu-2", "network": "cu", "asn": 4837, "city": "Tianjin", "healthy": true, "icmp": "timeout", "loss": 1, "tcp": {"22": "timeout", "443": "timeout"}},
+        {"id": "ctl", "network": "control", "asn": 15169, "city": "Ashburn", "healthy": true, "icmp": "timeout", "loss": 1, "tcp": {"22": "timeout", "443": "timeout"}}
+      ]
+    },
+    {
+      "name": "insufficient_sample",
+      "want": "insufficient_sample",
+      "ports": [22, 443],
+      "obs": [
+        {"id": "ct-1", "network": "ct", "asn": 4134, "city": "Shanghai", "healthy": true, "icmp": "timeout", "loss": 1, "tcp": {"443": "timeout"}},
+        {"id": "cu-1", "network": "cu", "asn": 4837, "city": "Beijing", "healthy": true, "icmp": "timeout", "loss": 1, "tcp": {"443": "timeout"}},
+        {"id": "ctl", "network": "control", "asn": 15169, "city": "Ashburn", "healthy": true, "icmp": "ok", "tcp": {"22": "ok", "443": "ok"}}
+      ]
+    }
+  ]
+}

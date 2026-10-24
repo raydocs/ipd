@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"io"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -27,14 +28,27 @@ func row(source, prefix string, rec lookup.Rec) lookup.SourceRow {
 }
 
 func parseDBIP(b []byte, source string, max int) ([]lookup.SourceRow, error) {
-	r := csv.NewReader(bytes.NewReader(b))
-	r.FieldsPerRecord = -1
-	r.LazyQuotes = true
 	var out []lookup.SourceRow
+	err := walkDBIP(bytes.NewReader(b), source, max, func(row lookup.SourceRow) error {
+		out = append(out, row)
+		return nil
+	})
+	return out, err
+}
+
+// walkDBIP streams DB-IP lite rows. max <= 0 means the whole file.
+func walkDBIP(r io.Reader, source string, max int, emit func(lookup.SourceRow) error) error {
+	cr := csv.NewReader(r)
+	cr.FieldsPerRecord = -1
+	cr.LazyQuotes = true
+	n := 0
 	for {
-		f, err := r.Read()
+		f, err := cr.Read()
+		if err == io.EOF {
+			return nil
+		}
 		if err != nil {
-			break
+			return err
 		}
 		if len(f) < 3 {
 			continue
@@ -63,13 +77,15 @@ func parseDBIP(b []byte, source string, max int) ([]lookup.SourceRow, error) {
 			rec.Lon, _ = strconv.ParseFloat(strings.TrimSpace(f[7]), 64)
 		}
 		for _, p := range prefixesBetween(start, end) {
-			out = append(out, row(source, p.String(), rec))
-			if max > 0 && len(out) >= max {
-				return out, nil
+			if err := emit(row(source, p.String(), rec)); err != nil {
+				return err
+			}
+			n++
+			if max > 0 && n >= max {
+				return nil
 			}
 		}
 	}
-	return out, nil
 }
 
 func parseRIR(b []byte, source string, max int) ([]lookup.SourceRow, error) {
@@ -265,9 +281,23 @@ func parseCIDRList(b []byte, source string, rec lookup.Rec, max int) ([]lookup.S
 
 func parseIP2ASN(b []byte, source string, max int) ([]lookup.SourceRow, error) {
 	var out []lookup.SourceRow
-	sc := bufio.NewScanner(bytes.NewReader(b))
+	err := walkIP2ASN(bytes.NewReader(b), source, max, func(row lookup.SourceRow) error {
+		out = append(out, row)
+		return nil
+	})
+	return out, err
+}
+
+// walkIP2ASN streams a prefix-to-ASN table. max <= 0 keeps every prefix.
+func walkIP2ASN(r io.Reader, source string, max int, emit func(lookup.SourceRow) error) error {
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	n := 0
+	stop := func() bool { return max > 0 && n >= max }
 	for sc.Scan() {
+		if stop() {
+			return nil
+		}
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -288,7 +318,10 @@ func parseIP2ASN(b []byte, source string, max int) ([]lookup.SourceRow, error) {
 			if len(f) >= 4 {
 				org = strings.Join(f[3:], " ")
 			}
-			out = append(out, row(source, f[0], lookup.Rec{ASN: asn, CC: cc, Org: org}))
+			if err := emit(row(source, f[0], lookup.Rec{ASN: asn, CC: cc, Org: org, AnnouncedCC: cc})); err != nil {
+				return err
+			}
+			n++
 		} else if start, err1 := netip.ParseAddr(f[0]); err1 == nil && len(f) >= 3 {
 			end, err2 := netip.ParseAddr(f[1])
 			if err2 != nil {
@@ -304,18 +337,17 @@ func parseIP2ASN(b []byte, source string, max int) ([]lookup.SourceRow, error) {
 			}
 			rec := lookup.Rec{ASN: asn, CC: cc, Org: org, AnnouncedCC: cc}
 			for _, p := range prefixesBetween(start, end) {
-				out = append(out, row(source, p.String(), rec))
-				if max > 0 && len(out) >= max {
-					return out, nil
+				if stop() {
+					return nil
 				}
+				if err := emit(row(source, p.String(), rec)); err != nil {
+					return err
+				}
+				n++
 			}
-			continue
-		}
-		if max > 0 && len(out) >= max {
-			return out, nil
 		}
 	}
-	return out, sc.Err()
+	return sc.Err()
 }
 
 func parseIPinfoLite(b []byte, source string, max int) ([]lookup.SourceRow, error) {

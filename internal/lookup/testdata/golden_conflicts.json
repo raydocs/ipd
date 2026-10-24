@@ -1,0 +1,42 @@
+[
+  {
+    "name": "cloudflare-dns-anycast-omitted",
+    "ip": "1.1.1.1",
+    "note": "1.1.1.0/24 is Cloudflare public DNS anycast. https://www.cloudflare.com/ips-v4 does not list it.",
+    "want_anycast": true,
+    "want_conflict": true,
+    "want_field": "anycast",
+    "rows": [
+      {"source": "bgp", "prefix": "1.1.1.0/24", "asn": 13335, "cc": "US", "org": "Cloudflare, Inc."},
+      {"source": "dbip_lite", "prefix": "1.1.1.0/24", "asn": 13335, "cc": "US"},
+      {"source": "rir_delegated", "prefix": "1.1.1.0/24", "asn": 13335, "registered_cc": "AU", "net_name": "APNIC-ANYCAST"}
+    ]
+  },
+  {
+    "name": "country-conflict",
+    "ip": "45.90.1.10",
+    "note": "Two geo sources name different countries for one ordinary prefix.",
+    "want_anycast": false,
+    "want_conflict": true,
+    "want_field": "cc",
+    "want_chosen_cc": "US",
+    "rows": [
+      {"source": "ipinfo_lite", "prefix": "45.90.1.0/24", "asn": 4242, "cc": "US", "as_type": "isp"},
+      {"source": "dbip_lite", "prefix": "45.90.1.0/24", "asn": 4242, "cc": "CN", "as_type": "isp"},
+      {"source": "bgp", "prefix": "45.90.1.0/24", "asn": 4242, "cc": "US"}
+    ]
+  },
+  {
+    "name": "normal-agreement",
+    "ip": "45.91.2.20",
+    "note": "Geo, ASN, and network type agree. Not anycast.",
+    "want_anycast": false,
+    "want_conflict": false,
+    "rows": [
+      {"source": "ipinfo_lite", "prefix": "45.91.2.0/24", "asn": 7922, "cc": "US", "as_type": "isp", "org": "Comcast"},
+      {"source": "dbip_lite", "prefix": "45.91.2.0/24", "asn": 7922, "cc": "US", "as_type": "isp", "city": "Chicago"},
+      {"source": "bgp", "prefix": "45.91.2.0/24", "asn": 7922, "cc": "US", "org": "Comcast"},
+      {"source": "peeringdb", "prefix": "45.91.2.0/24", "asn": 7922, "as_type": "isp"}
+    ]
+  }
+]
