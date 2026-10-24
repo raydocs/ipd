@@ -3,6 +3,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"ipd/internal/app"
+	"ipd/internal/leak"
 	"ipd/internal/mcp"
 	"ipd/internal/pow"
 	"ipd/internal/privacy"
@@ -68,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/route/targets", s.targets)
 	mux.HandleFunc("POST /v1/latency", s.latency)
 	mux.HandleFunc("GET /v1/jobs/{id}", s.job)
+	mux.HandleFunc("POST /v1/dnsleak", s.dnsSessionCreate)
 	mux.HandleFunc("GET /v1/dnsleak/{token}", s.dnsleak)
 	mux.HandleFunc("POST /v1/report", s.report)
 	mux.HandleFunc("GET /r/{id}", s.share)
@@ -111,7 +114,35 @@ func (s *Server) favicon(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
+// dnsSessionPath checks each decoded path prefix before dot-segment removal.
+// Checking only path.Clean loses bearers in e.g. /v1//dnsleak/token/../../sources.
+func dnsSessionPath(p string) bool {
+	var stack []string
+	for _, segment := range strings.Split(p, "/") {
+		switch segment {
+		case "", ".":
+			continue
+		case "..":
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		default:
+			stack = append(stack, segment)
+		}
+		if len(stack) >= 2 && stack[0] == "v1" && stack[1] == "dnsleak" {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) note(r *http.Request) {
+	// URL.Path has already been percent-decoded by net/http. Do not persist any
+	// prefix that entered the sensitive namespace, even if later segments leave it.
+	if dnsSessionPath(r.URL.Path) {
+		return
+	}
+
 	if s.Svc.DB == nil || s.Svc.Cfg == nil {
 		return
 	}
@@ -166,7 +197,10 @@ func (s *Server) writeSSE(w http.ResponseWriter, rep app.Report) {
 		rep = s.Svc.WithSnapshot(rep)
 	}
 	w.Header().Set("content-type", "text/event-stream")
-	w.Header().Set("cache-control", "no-cache")
+	// Session bearers require the stricter policy set by dnsSessionResponse.
+	if w.Header().Get("Cache-Control") != "no-store" {
+		w.Header().Set("cache-control", "no-cache")
+	}
 	b, _ := json.Marshal(rep)
 	fmt.Fprintf(w, "event: local\ndata: %s\n\n", b)
 	fmt.Fprintf(w, "event: done\ndata: {}\n\n")
@@ -365,12 +399,46 @@ func (s *Server) targets(w http.ResponseWriter, r *http.Request) {
 	s.write(w, r, 200, rep)
 }
 
-func (s *Server) dnsleak(w http.ResponseWriter, r *http.Request) {
-	rep := s.Svc.DNSLeak(r.Context(), 1)
-	if m, ok := rep.Data.(map[string]any); ok {
-		m["token"] = r.PathValue("token")
+func (s *Server) dnsSessionResponse(w http.ResponseWriter, r *http.Request, rep app.Report, err error) {
+	w.Header().Set("Cache-Control", "no-store")
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		if errors.Is(err, leak.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		if !errors.Is(err, leak.ErrNotFound) && !errors.Is(err, leak.ErrDisabled) && !errors.Is(err, leak.ErrCapacity) {
+			http.Error(w, "DNS session unavailable", http.StatusInternalServerError)
+			return
+		}
+		http.Error(w, err.Error(), status)
+		return
 	}
-	s.write(w, r, 200, rep)
+	// The generic text renderer compacts/truncates values. Session capabilities
+	// and observations must remain complete, including long names and IPv6/ECS.
+	// Keep this exception local to DNS; JSON/Markdown/SSE keep their wire schemas.
+	if r.URL.Query().Get("stream") != "1" && negotiate(r, true) == "text" {
+		rep = s.Svc.WithSnapshot(rep)
+		data, _ := json.Marshal(rep.Data)
+		rep.Data = nil
+		header, contentType := Render("text", rep)
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("X-IPD-Verdict", rep.Verdict)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "%sdata: %s\n", header, data)
+		return
+	}
+
+	s.write(w, r, http.StatusOK, rep)
+}
+
+func (s *Server) dnsSessionCreate(w http.ResponseWriter, r *http.Request) {
+	rep, err := s.Svc.CreateDNSSession()
+	s.dnsSessionResponse(w, r, rep, err)
+}
+
+func (s *Server) dnsleak(w http.ResponseWriter, r *http.Request) {
+	rep, err := s.Svc.DNSSession(r.PathValue("token"))
+	s.dnsSessionResponse(w, r, rep, err)
 }
 
 func (s *Server) sources(w http.ResponseWriter, r *http.Request) {
