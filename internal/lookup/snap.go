@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gaissmai/bart"
 	"golang.org/x/sys/unix"
@@ -40,9 +39,6 @@ type packedRow struct {
 
 // NewSnapshotBuilder starts a snapshot for one source.
 func NewSnapshotBuilder(meta SourceMeta) *SnapshotBuilder {
-	if meta.UpdatedAt.IsZero() {
-		meta.UpdatedAt = time.Now().UTC()
-	}
 	return &SnapshotBuilder{Meta: meta}
 }
 
@@ -121,7 +117,9 @@ func (b *SnapshotBuilder) CommitFile(path string) error {
 	hdr := make([]byte, snapFixed)
 	copy(hdr[0:4], snapMagic)
 	binary.LittleEndian.PutUint32(hdr[4:8], snapVersion)
-	binary.LittleEndian.PutUint64(hdr[8:16], uint64(b.Meta.UpdatedAt.UTC().UnixNano()))
+	if !b.Meta.UpdatedAt.IsZero() {
+		binary.LittleEndian.PutUint64(hdr[8:16], uint64(b.Meta.UpdatedAt.UTC().UnixNano()))
+	}
 	binary.LittleEndian.PutUint32(hdr[16:20], uint32(len(placedRows)))
 	binary.LittleEndian.PutUint32(hdr[20:24], uint32(len(meta)))
 	if _, err := f.Write(hdr); err != nil {
@@ -453,7 +451,8 @@ func (m *mappedTable) each(fn func(netip.Prefix, Rec)) {
 }
 
 // InstallSnapshot maps path and swaps it in as the live table for that source.
-// The previous mapping is unmapped only after the pointer swap.
+// Data, metadata and source time are published under the same write lock.
+// That lock also drains readers before the previous mapping is unmapped.
 func (e *Engine) InstallSnapshot(path string) (int, error) {
 	if e == nil {
 		return 0, fmt.Errorf("nil engine")
@@ -467,6 +466,7 @@ func (e *Engine) InstallSnapshot(path string) (int, error) {
 		return 0, fmt.Errorf("snapshot missing source id")
 	}
 	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.mapped == nil {
 		e.mapped = map[string]*mappedTable{}
 	}
@@ -489,7 +489,6 @@ func (e *Engine) InstallSnapshot(path string) (int, error) {
 		e.byID[meta.ID] = len(e.meta)
 		e.meta = append(e.meta, meta)
 	}
-	e.mu.Unlock()
 	if old != nil {
 		_ = old.Close()
 	}
