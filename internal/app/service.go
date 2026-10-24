@@ -751,45 +751,6 @@ func (s *Service) ClassifyPath(hops []route.Hop, claimed string) Report {
 	return Report{Verdict: v, Summary: sum, Data: route.Result{Paths: []route.Path{p}, Summary: sum, Claimed: claimed, ClaimMismatch: mismatch}, Sources: []Source{{ID: "local"}}, CachedAt: s.now()}
 }
 
-// Latency asks the vantage for RTTs.
-func (s *Service) Latency(ctx context.Context, target string) (Report, error) {
-	if s.Vantage == nil || !s.Vantage.Enabled() {
-		return Report{}, fmt.Errorf("vantage disabled")
-	}
-	samples, err := s.Vantage.Measure(ctx, probe.Query{Kind: probe.KindPing, Target: target, Limit: 2, Control: 2})
-	if err != nil {
-		return Report{}, err
-	}
-	rows := []map[string]any{}
-	for _, sm := range samples {
-		rows = append(rows, map[string]any{
-			"probe": sm.Provider, "cc": sm.Country, "city": sm.City, "asn": sm.ASN, "rtt_ms": sm.RTTMS, "loss": sm.Loss,
-		})
-	}
-	return Report{Verdict: "ok", Summary: fmt.Sprintf("%d probes", len(rows)), Data: map[string]any{"rows": rows, "svg": latencySVG(rows)}, Sources: []Source{{ID: s.Vantage.Name()}}, CachedAt: s.now()}, nil
-}
-
-func latencySVG(rows []map[string]any) string {
-	var b strings.Builder
-	b.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" width="640" height="`)
-	h := 40 + 28*len(rows)
-	if h < 80 {
-		h = 80
-	}
-	fmt.Fprintf(&b, `%d" viewBox="0 0 640 %d">`, h, h)
-	b.WriteString(`<rect width="100%" height="100%" fill="#f4f1ea"/>`)
-	b.WriteString(`<text x="16" y="28" font-family="ui-monospace,monospace" font-size="16">ipd latency</text>`)
-	for i, row := range rows {
-		y := 56 + i*28
-		city, _ := row["city"].(string)
-		cc, _ := row["cc"].(string)
-		rtt, _ := row["rtt_ms"].(float64)
-		fmt.Fprintf(&b, `<text x="16" y="%d" font-family="ui-monospace,monospace" font-size="13">%s %s  %.1f ms</text>`, y, cc, city, rtt)
-	}
-	b.WriteString(`</svg>`)
-	return b.String()
-}
-
 // Unlock runs egress-side service checks.
 func (s *Service) Unlock(ctx context.Context, ids []string) Report {
 	if s.Checks == nil {

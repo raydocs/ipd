@@ -46,6 +46,11 @@ func Main(args []string) int {
 	case "help", "-h", "--help":
 		fmt.Fprint(os.Stdout, helpText)
 		return 0
+	case "latency":
+		if len(rest) == 2 && (rest[1] == "--help" || rest[1] == "-h") {
+			fmt.Fprint(os.Stdout, latencyHelp)
+			return 0
+		}
 	case "version":
 		fmt.Printf("ipd %s\n", version.Version)
 		return 0
@@ -160,6 +165,8 @@ func dispatch(ctx context.Context, svc *app.Service, cfg *config.Config, g globa
 		return svc.DNSLeak(ctx, 1), nil
 	case "route":
 		return routeCmd(ctx, svc, args)
+	case "latency":
+		return latencyCmd(ctx, svc, args)
 	case "gfw":
 		if len(args) == 0 {
 			return app.Report{}, fmt.Errorf("用法：ipd gfw <ip|主机>")
@@ -213,6 +220,86 @@ func dispatch(ctx context.Context, svc *app.Service, cfg *config.Config, g globa
 		}
 		return app.Report{}, fmt.Errorf("未知命令 %s\n%s", cmd, helpText)
 	}
+}
+
+const latencyHelp = `用法：ipd latency <target> [--svg <local-file>]
+只保存本地自包含 SVG，不上传或开启分享；拒绝覆盖，权限 0600。
+单次 ICMP 探针预算不变；--offline 不请求探针。无有效 RTT 返回 abstain（退出码 10）。
+`
+
+func latencyCmd(ctx context.Context, svc *app.Service, args []string) (app.Report, error) {
+	target, path := "", ""
+	svgSeen := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--svg" || strings.HasPrefix(a, "--svg="):
+			if svgSeen {
+				return app.Report{}, fmt.Errorf("--svg 只能指定一次")
+			}
+			svgSeen = true
+			if a == "--svg" {
+				if i+1 >= len(args) {
+					return app.Report{}, fmt.Errorf("--svg 需要本地文件路径")
+				}
+				i++
+				path = args[i]
+			} else {
+				path = strings.TrimPrefix(a, "--svg=")
+			}
+			if strings.TrimSpace(path) == "" || strings.HasPrefix(path, "--") {
+				return app.Report{}, fmt.Errorf("--svg 需要本地文件路径")
+			}
+		case strings.HasPrefix(a, "-"):
+			return app.Report{}, fmt.Errorf("未知 latency 参数 %s\n%s", a, latencyHelp)
+		default:
+			if target != "" {
+				return app.Report{}, fmt.Errorf("%s", latencyHelp)
+			}
+			target = a
+		}
+	}
+	if strings.TrimSpace(target) == "" {
+		return app.Report{}, fmt.Errorf("%s", latencyHelp)
+	}
+	// Reserve before measuring: existing paths (including symlinks/directories)
+	// fail atomically, without spending another probe request or truncating data.
+	var f *os.File
+	if svgSeen {
+		var err error
+		f, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			return app.Report{}, fmt.Errorf("保存 SVG: %w", err)
+		}
+		saved := false
+		defer func() {
+			_ = f.Close()
+			if !saved {
+				_ = os.Remove(path)
+			}
+		}()
+		rep, err := svc.Latency(ctx, target)
+		if err != nil {
+			return app.Report{}, err
+		}
+		data, ok := rep.Data.(map[string]any)
+		if !ok {
+			return app.Report{}, fmt.Errorf("latency 响应缺少 SVG")
+		}
+		svg, ok := data["svg"].(string)
+		if !ok || svg == "" {
+			return app.Report{}, fmt.Errorf("latency 响应缺少 SVG")
+		}
+		if _, err := io.WriteString(f, svg); err != nil {
+			return app.Report{}, fmt.Errorf("保存 SVG: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return app.Report{}, fmt.Errorf("保存 SVG: %w", err)
+		}
+		saved = true
+		return rep, nil
+	}
+	return svc.Latency(ctx, target)
 }
 
 func discover() string {
@@ -627,6 +714,7 @@ const helpText = `ipd — 给 agent 用的地址情报与网络质量
   ipd unlock [服务…]       解锁检测
   ipd leak                 DNS 泄露（WebRTC 请用浏览器页）
   ipd route [--return] [--claimed cn2gia] [目标]
+  ipd latency <target> [--svg <local-file>]  本地延迟卡片（不覆盖、不上传）
   ipd gfw <ip|主机>        被墙还是仅仅拥塞
   ipd nodes <clash.yaml>   批量节点（订阅只在本机解析）
   ipd batch                从标准输入读 IP
