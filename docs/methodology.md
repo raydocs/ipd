@@ -26,3 +26,9 @@
 每次响应都带 `snapshot_age_seconds`，表示前缀快照（DB-IP 与 prefix-to-ASN，取更旧的一份）建成到现在的秒数。快照是可 mmap 的 `IPDS` 文件，写入用临时文件加重命名，查找不经过 40 万行上限。
 
 WebRTC 候选地址在浏览器里比较。服务端只收 `leak` 和 `candidate_count`。
+
+解锁检测采用三态证据：`yes` 只表示预期端点出现可识别的正向页面或结构化字段，`no` 只表示明确的地域拒绝；这不是登录后实际播放或模型调用的保证。未配置正向识别规则的服务即使返回 HTTP 200，也不会因「没有封锁标记」判定为可用。普通 HTTP 错误、改版、空响应、验证码/挑战页、非预期主机或路径跳转、读取中断及超限响应均为 `abstain`。403/451 也必须有地域拒绝证据才是 `no`，网络安全拦截、泛化的 unavailable 或 VPN 提示不等于地域拒绝。
+
+ChatGPT 的网页与 App 端点必须分别识别；任一未知或失败，整体弃权，不能据另一侧推断 `app_only` / `web_only`。Netflix 的两个片目同理；TikTok 的 gzip 回退不能掩盖首请求失败。Claude / ChatGPT 的地域 trace 无法识别时也弃权。解锁汇总中只要有未知就返回 `abstain`，保留每项结果，不将错误计为封锁。
+
+Google 地域检查要求 Google、YouTube 和 Play 三项响应均成功且可识别；普通页面内的 google.com.hk 链接不是送中跳转。只有精确匹配的 Google 本地主机跳转或已识别的 CN 地域证据才能报告送中；非中国地域证据冲突时弃权。无法判定时公开字段为 `sent_to_china: null`，而不是 `false`，且不补猜 google.com。这里不对被墙状态作判断。

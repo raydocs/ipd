@@ -1,4 +1,4 @@
-// Package cli is the ipd command line. User-facing text is Chinese.
+// Package cli is the ipd command line. Chinese is the default locale.
 // The same binary serves HTTP, MCP, the probe agent, and the checks.
 package cli
 
@@ -27,7 +27,11 @@ import (
 
 // Main runs one invocation and returns the process exit code.
 func Main(args []string) int {
-	opts, rest := parseGlobals(args)
+	opts, rest, err := parseGlobals(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, opts.lang.error(err))
+		return 2
+	}
 	cfg := config.FromEnv()
 	if opts.offline {
 		cfg.Offline = true
@@ -44,13 +48,18 @@ func Main(args []string) int {
 	cmd := rest[0]
 	switch cmd {
 	case "help", "-h", "--help":
-		fmt.Fprint(os.Stdout, helpText)
+		fmt.Fprint(os.Stdout, opts.lang.text(helpText))
 		return 0
+	case "latency":
+		if len(rest) == 2 && (rest[1] == "--help" || rest[1] == "-h") {
+			fmt.Fprint(os.Stdout, latencyHelp)
+			return 0
+		}
 	case "version":
 		fmt.Printf("ipd %s\n", version.Version)
 		return 0
 	case "serve":
-		return serve(cfg)
+		return serve(cfg, opts.lang)
 	case "mcp":
 		return runMCP(cfg)
 	case "ingest":
@@ -59,15 +68,15 @@ func Main(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
-		fmt.Printf("已写入 %s，启用本地源 %d 个\n", res.Note, res.Sources)
+		fmt.Printf(opts.lang.text("已写入 %s，启用本地源 %d 个\n"), res.Note, res.Sources)
 		if res.MaxMind != "" {
 			fmt.Println(res.MaxMind)
 		}
 		return 0
 	case "data":
-		return dataCmd(cfg, rest[1:])
+		return dataCmd(cfg, rest[1:], opts.lang)
 	case "agent":
-		return runAgent(cfg)
+		return runAgent(cfg, opts.lang)
 	}
 	db := openDB(cfg)
 	defer func() {
@@ -80,16 +89,17 @@ func Main(args []string) int {
 	defer cancel()
 	rep, err := dispatch(ctx, svc, cfg, opts, cmd, rest[1:])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
+		fmt.Fprintln(os.Stderr, opts.lang.error(err))
 		return 2
 	}
 	rep = svc.WithSnapshot(rep)
-	body, _ := render(opts.format, rep)
+	body, _ := renderLocalized(opts.format, rep, opts.lang, cmd, rest[1:])
 	fmt.Fprint(os.Stdout, string(body))
 	return app.ExitCode(rep.Verdict)
 }
 
 type globals struct {
+	lang    locale
 	format  string
 	offline bool
 	proxy   string
@@ -97,8 +107,11 @@ type globals struct {
 	ipv     string
 }
 
-func parseGlobals(args []string) (globals, []string) {
-	g := globals{format: "text"}
+func parseGlobals(args []string) (globals, []string, error) {
+	g := globals{format: "text", lang: "zh"}
+	var langValue string
+	langSeen := false
+	var langErr error
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -110,6 +123,20 @@ func parseGlobals(args []string) (globals, []string) {
 			return ""
 		}
 		switch {
+		case a == "--lang" || strings.HasPrefix(a, "--lang="):
+			langSeen = true
+			if a == "--lang" {
+				if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+					langErr = fmt.Errorf("--lang requires en or zh")
+					continue
+				}
+				langValue = take()
+			} else {
+				langValue = strings.TrimPrefix(a, "--lang=")
+			}
+			if langValue != "en" && langValue != "zh" {
+				langErr = fmt.Errorf("invalid --lang %q: expected en or zh", langValue)
+			}
 		case a == "--json":
 			g.format = "json"
 		case a == "--md":
@@ -136,7 +163,19 @@ func parseGlobals(args []string) (globals, []string) {
 			rest = append(rest, a)
 		}
 	}
-	return g, rest
+	if !langSeen {
+		langValue = os.Getenv("IPD_LANG")
+		if langValue == "" {
+			langValue = "zh"
+		}
+		if langValue != "en" && langValue != "zh" {
+			langErr = fmt.Errorf("invalid IPD_LANG %q: expected en or zh", langValue)
+		}
+	}
+	if langValue == "en" || langValue == "zh" {
+		g.lang = locale(langValue)
+	}
+	return g, rest, langErr
 }
 
 func dispatch(ctx context.Context, svc *app.Service, cfg *config.Config, g globals, cmd string, args []string) (app.Report, error) {
@@ -145,7 +184,7 @@ func dispatch(ctx context.Context, svc *app.Service, cfg *config.Config, g globa
 		rep, err := svc.WhoAmI(ctx, discover(), g.ipv)
 		return rep, err
 	case "check":
-		return check(ctx, svc)
+		return check(ctx, svc, g.lang)
 	case "ai":
 		cli := false
 		for _, a := range args {
@@ -160,19 +199,21 @@ func dispatch(ctx context.Context, svc *app.Service, cfg *config.Config, g globa
 		return svc.DNSLeak(ctx, 1), nil
 	case "route":
 		return routeCmd(ctx, svc, args)
+	case "latency":
+		return latencyCmd(ctx, svc, args)
 	case "gfw":
 		if len(args) == 0 {
-			return app.Report{}, fmt.Errorf("用法：ipd gfw <ip|主机>")
+			return app.Report{}, cliError("用法：ipd gfw <ip|主机>")
 		}
 		return svc.GFW(ctx, args[0], nil)
 	case "mail":
 		if len(args) == 0 {
-			return app.Report{}, fmt.Errorf("用法：ipd mail <主机>")
+			return app.Report{}, cliError("用法：ipd mail <主机>")
 		}
 		return svc.PortCheck(ctx, args[0], 25, "global")
 	case "nodes":
 		if len(args) == 0 {
-			return app.Report{}, fmt.Errorf("用法：ipd nodes <订阅或 clash.yaml>")
+			return app.Report{}, cliError("用法：ipd nodes <订阅或 clash.yaml>")
 		}
 		return svc.Nodes(ctx, args[0], nil)
 	case "batch":
@@ -189,12 +230,12 @@ func dispatch(ctx context.Context, svc *app.Service, cfg *config.Config, g globa
 		}
 		return svc.Batch(ctx, ips)
 	case "watch":
-		return watchCmd(svc, args)
+		return watchCmd(svc, args, g.lang)
 	case "report":
-		return reportCmd(svc, args)
+		return reportCmd(svc, args, g.lang)
 	case "label":
 		if len(args) < 2 {
-			return app.Report{}, fmt.Errorf("用法：ipd label <ip> <标签>")
+			return app.Report{}, cliError("用法：ipd label <ip> <标签>")
 		}
 		note := ""
 		if len(args) > 2 {
@@ -203,7 +244,7 @@ func dispatch(ctx context.Context, svc *app.Service, cfg *config.Config, g globa
 		if err := svc.Label(args[0], args[1], note); err != nil {
 			return app.Report{}, err
 		}
-		return app.Report{Verdict: "ok", Summary: "标签已保存", Data: map[string]any{"ip": args[0], "label": args[1]}, Sources: []app.Source{}}, nil
+		return app.Report{Verdict: "ok", Summary: g.lang.text("标签已保存"), Data: map[string]any{"ip": args[0], "label": args[1]}, Sources: []app.Source{}}, nil
 	default:
 		if looksLikeIP(cmd) {
 			if cfg.ServerURL != "" {
@@ -211,8 +252,87 @@ func dispatch(ctx context.Context, svc *app.Service, cfg *config.Config, g globa
 			}
 			return svc.Risk(ctx, cmd, !cfg.Offline)
 		}
-		return app.Report{}, fmt.Errorf("未知命令 %s\n%s", cmd, helpText)
+		return app.Report{}, cliError("未知命令 %s\n%s", cmd, g.lang.text(helpText))
 	}
+}
+
+const latencyHelp = `用法：ipd latency <target> [--svg <local-file>]
+只保存本地自包含 SVG，不上传或开启分享；拒绝覆盖，权限 0600。
+单次 ICMP 探针预算不变；--offline 不请求探针。无有效 RTT 返回 abstain（退出码 10）。
+`
+
+func latencyCmd(ctx context.Context, svc *app.Service, args []string) (app.Report, error) {
+	target, path := "", ""
+	svgSeen := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--svg" || strings.HasPrefix(a, "--svg="):
+			if svgSeen {
+				return app.Report{}, fmt.Errorf("--svg 只能指定一次")
+			}
+			svgSeen = true
+			if a == "--svg" {
+				if i+1 >= len(args) {
+					return app.Report{}, fmt.Errorf("--svg 需要本地文件路径")
+				}
+				i++
+				path = args[i]
+			} else {
+				path = strings.TrimPrefix(a, "--svg=")
+			}
+			if strings.TrimSpace(path) == "" || strings.HasPrefix(path, "--") {
+				return app.Report{}, fmt.Errorf("--svg 需要本地文件路径")
+			}
+		case strings.HasPrefix(a, "-"):
+			return app.Report{}, fmt.Errorf("未知 latency 参数 %s\n%s", a, latencyHelp)
+		default:
+			if target != "" {
+				return app.Report{}, fmt.Errorf("%s", latencyHelp)
+			}
+			target = a
+		}
+	}
+	if strings.TrimSpace(target) == "" {
+		return app.Report{}, fmt.Errorf("%s", latencyHelp)
+	}
+	// Reserve before measuring: existing paths (including symlinks/directories)
+	// fail atomically, without spending another probe request or truncating data.
+	var f *os.File
+	if svgSeen {
+		var err error
+		f, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			return app.Report{}, fmt.Errorf("保存 SVG: %w", err)
+		}
+		// The pathname can be replaced while Measure runs. Only close our fd:
+		// even checking SameFile before Remove would leave an unlink TOCTOU.
+		// Keeping our own empty/partial export is safer than deleting a new owner.
+		defer f.Close()
+		incomplete := func(err error) (app.Report, error) {
+			return app.Report{}, fmt.Errorf("保存 SVG: %w; empty/partial export may remain (no path cleanup attempted)", err)
+		}
+		rep, err := svc.Latency(ctx, target)
+		if err != nil {
+			return incomplete(err)
+		}
+		data, ok := rep.Data.(map[string]any)
+		if !ok {
+			return incomplete(fmt.Errorf("latency 响应缺少 SVG"))
+		}
+		svg, ok := data["svg"].(string)
+		if !ok || svg == "" {
+			return incomplete(fmt.Errorf("latency 响应缺少 SVG"))
+		}
+		if _, err := io.WriteString(f, svg); err != nil {
+			return incomplete(err)
+		}
+		if err := f.Close(); err != nil {
+			return incomplete(err)
+		}
+		return rep, nil
+	}
+	return svc.Latency(ctx, target)
 }
 
 func discover() string {
@@ -228,7 +348,7 @@ func discover() string {
 	return host
 }
 
-func check(ctx context.Context, svc *app.Service) (app.Report, error) {
+func check(ctx context.Context, svc *app.Service, lang locale) (app.Report, error) {
 	me, err := svc.WhoAmI(ctx, discover(), "")
 	if err != nil {
 		me = app.Report{Verdict: "abstain", Summary: err.Error(), Data: map[string]any{}}
@@ -243,7 +363,7 @@ func check(ctx context.Context, svc *app.Service) (app.Report, error) {
 			worst = v
 		}
 	}
-	sum := "一站式：" + worst + "。AI " + ai.Verdict + "，解锁 " + unlock.Verdict + "，DNS " + leak.Verdict
+	sum := fmt.Sprintf(lang.text("一站式：%s。AI %s，解锁 %s，DNS %s"), worst, ai.Verdict, unlock.Verdict, leak.Verdict)
 	return app.Report{
 		Verdict: worst,
 		Summary: sum,
@@ -278,16 +398,16 @@ func routeCmd(ctx context.Context, svc *app.Service, args []string) (app.Report,
 	return svc.RouteForward(ctx, target, nil)
 }
 
-func watchCmd(svc *app.Service, args []string) (app.Report, error) {
+func watchCmd(svc *app.Service, args []string, lang locale) (app.Report, error) {
 	if len(args) == 0 {
-		return app.Report{}, fmt.Errorf("用法：ipd watch add|ls|rm")
+		return app.Report{}, cliError("用法：ipd watch add|ls|rm")
 	}
 	switch args[0] {
 	case "ls":
 		return svc.ListWatches()
 	case "add":
 		if len(args) < 2 {
-			return app.Report{}, fmt.Errorf("用法：ipd watch add <ip> [webhook]")
+			return app.Report{}, cliError("用法：ipd watch add <ip> [webhook]")
 		}
 		hook := ""
 		if len(args) > 2 {
@@ -296,18 +416,18 @@ func watchCmd(svc *app.Service, args []string) (app.Report, error) {
 		return svc.CreateWatch(args[1], "risk", hook)
 	case "rm":
 		if len(args) < 2 {
-			return app.Report{}, fmt.Errorf("用法：ipd watch rm <id>")
+			return app.Report{}, cliError("用法：ipd watch rm <id>")
 		}
 		if err := svc.DeleteWatch(args[1]); err != nil {
 			return app.Report{}, err
 		}
-		return app.Report{Verdict: "ok", Summary: "已删除 " + args[1], Data: map[string]any{"watch_id": args[1]}, Sources: []app.Source{}}, nil
+		return app.Report{Verdict: "ok", Summary: fmt.Sprintf(lang.text("已删除 %s"), args[1]), Data: map[string]any{"watch_id": args[1]}, Sources: []app.Source{}}, nil
 	default:
-		return app.Report{}, fmt.Errorf("用法：ipd watch add|ls|rm")
+		return app.Report{}, cliError("用法：ipd watch add|ls|rm")
 	}
 }
 
-func reportCmd(svc *app.Service, args []string) (app.Report, error) {
+func reportCmd(svc *app.Service, args []string, lang locale) (app.Report, error) {
 	raw, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		return app.Report{}, err
@@ -322,7 +442,7 @@ func reportCmd(svc *app.Service, args []string) (app.Report, error) {
 	host, _ := os.Hostname()
 	clean := privacy.Redact(body, []string{host})
 	if !share {
-		return app.Report{Verdict: "ok", Summary: "本地报告（未上传）", Data: map[string]any{"body": clean, "shared": false}, Sources: []app.Source{}}, nil
+		return app.Report{Verdict: "ok", Summary: lang.text("本地报告（未上传）"), Data: map[string]any{"body": clean, "shared": false}, Sources: []app.Source{}}, nil
 	}
 	return svc.Share(clean, []string{host})
 }
@@ -377,10 +497,10 @@ func runMCP(cfg *config.Config) int {
 	return 0
 }
 
-func runAgent(cfg *config.Config) int {
+func runAgent(cfg *config.Config, lang locale) int {
 	base := cfg.ServerURL
 	if base == "" {
-		fmt.Fprintln(os.Stderr, "ipd agent 需要 --server 或 IPD_SERVER，指向 hub 的 http 地址")
+		fmt.Fprintln(os.Stderr, lang.text("ipd agent 需要 --server 或 IPD_SERVER，指向 hub 的 http 地址"))
 		return 2
 	}
 	ws := strings.TrimRight(base, "/")
@@ -396,7 +516,7 @@ func runAgent(cfg *config.Config) int {
 	return 0
 }
 
-func serve(cfg *config.Config) int {
+func serve(cfg *config.Config, lang locale) int {
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -414,14 +534,14 @@ func serve(cfg *config.Config) int {
 	defer cancel()
 	go aux(ctx, cfg, svc)
 	go watchLoop(ctx, svc)
-	go dataLoop(ctx, cfg, svc)
+	go dataLoop(ctx, cfg, svc, lang)
 	if cfg.Peak {
 		go peakLoop(ctx, svc)
 	}
 	if cfg.Canary {
 		go canaryLoop(ctx, svc)
 	}
-	fmt.Fprintf(os.Stderr, "ipd %s 监听 http://%s （域名配置为 %s，未绑定公网）\n", version.Version, cfg.HTTPAddr, cfg.Domain)
+	fmt.Fprintf(os.Stderr, lang.text("ipd %s 监听 http://%s （域名配置为 %s，未绑定公网）\n"), version.Version, cfg.HTTPAddr, cfg.Domain)
 	httpSrv := &http.Server{Addr: cfg.HTTPAddr, Handler: srv.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintln(os.Stderr, err)
@@ -455,9 +575,9 @@ func aux(ctx context.Context, cfg *config.Config, svc *app.Service) {
 	}()
 }
 
-func dataCmd(cfg *config.Config, args []string) int {
+func dataCmd(cfg *config.Config, args []string, lang locale) int {
 	if len(args) == 0 || args[0] != "update" {
-		fmt.Fprintln(os.Stderr, "用法：ipd data update")
+		fmt.Fprintln(os.Stderr, lang.text("用法：ipd data update"))
 		return 2
 	}
 	db := openDB(cfg)
@@ -468,7 +588,7 @@ func dataCmd(cfg *config.Config, args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 	sum, err := ingest.Update(ctx, cfg, svc.Look, func(line string) {
-		fmt.Fprintln(os.Stderr, line)
+		fmt.Fprintln(os.Stderr, lang.originalProgress(line))
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -480,7 +600,7 @@ func dataCmd(cfg *config.Config, args []string) int {
 		switch {
 		case f.Err != "":
 			failed++
-			fmt.Printf("%s 失败: %s\n", f.ID, f.Err)
+			fmt.Printf(lang.text("%s 失败: %s\n"), f.ID, f.Err)
 		case f.Note != "" && f.Rows == 0:
 			fmt.Printf("%s %s\n", f.ID, f.Note)
 		default:
@@ -489,19 +609,19 @@ func dataCmd(cfg *config.Config, args []string) int {
 			if f.Note != "" {
 				extra = " (" + f.Note + ")"
 			}
-			fmt.Printf("%s %d 条%s\n", f.ID, f.Rows, extra)
+			fmt.Printf(lang.text("%s %d 条%s\n"), f.ID, f.Rows, extra)
 		}
 	}
-	fmt.Printf("快照目录 %s\n", sum.Dir)
+	fmt.Printf(lang.text("快照目录 %s\n"), sum.Dir)
 	if ok == 0 && failed > 0 {
 		return 2
 	}
 	return 0
 }
 
-func dataLoop(ctx context.Context, cfg *config.Config, svc *app.Service) {
+func dataLoop(ctx context.Context, cfg *config.Config, svc *app.Service, lang locale) {
 	if err := ingest.Load(svc.Look, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "读取数据快照: %v\n", err)
+		fmt.Fprintf(os.Stderr, lang.text("读取数据快照: %v\n"), err)
 	}
 	if cfg == nil || !cfg.DataUpdate {
 		return
@@ -510,7 +630,7 @@ func dataLoop(ctx context.Context, cfg *config.Config, svc *app.Service) {
 		cctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
 		defer cancel()
 		sum, err := ingest.Update(cctx, cfg, svc.Look, func(line string) {
-			fmt.Fprintln(os.Stderr, "data:", line)
+			fmt.Fprintln(os.Stderr, "data:", lang.originalProgress(line))
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "data update: %v\n", err)
@@ -518,7 +638,7 @@ func dataLoop(ctx context.Context, cfg *config.Config, svc *app.Service) {
 		}
 		for _, f := range sum.Feeds {
 			if f.Err != "" {
-				fmt.Fprintf(os.Stderr, "data: %s 失败: %s\n", f.ID, f.Err)
+				fmt.Fprintf(os.Stderr, lang.text("data: %s 失败: %s\n"), f.ID, f.Err)
 			}
 		}
 	}
@@ -627,6 +747,7 @@ const helpText = `ipd — 给 agent 用的地址情报与网络质量
   ipd unlock [服务…]       解锁检测
   ipd leak                 DNS 泄露（WebRTC 请用浏览器页）
   ipd route [--return] [--claimed cn2gia] [目标]
+  ipd latency <target> [--svg <local-file>]  本地延迟卡片（不覆盖、不上传）
   ipd gfw <ip|主机>        被墙还是仅仅拥塞
   ipd nodes <clash.yaml>   批量节点（订阅只在本机解析）
   ipd batch                从标准输入读 IP
@@ -636,7 +757,7 @@ const helpText = `ipd — 给 agent 用的地址情报与网络质量
   ipd data update          下载免费数据集并刷新本地快照
   ipd serve | mcp | agent | ingest | version
 
-全局：--json --md --txt --offline --proxy URL --server URL -4 -6
+全局：--lang en|zh（默认中文；覆盖 IPD_LANG） --json --md --txt --offline --proxy URL --server URL -4 -6
 退出码：0 正常，10 有保留，20 差。域名用 IPD_DOMAIN，监听地址都可配置。
 数据更新在 serve 里按 IPD_DATA_UPDATE 跑（默认：未离线时开启）。晚高峰采样 IPD_PEAK，金丝雀 IPD_CANARY，默认都关。
 `
