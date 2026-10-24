@@ -6,58 +6,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/gaissmai/bart"
 )
-
-func rssBytes() uint64 {
-	b, err := os.ReadFile("/proc/self/statm")
-	if err != nil {
-		return 0
-	}
-	f := strings.Fields(string(b))
-	if len(f) < 2 {
-		return 0
-	}
-	pages, _ := strconv.ParseUint(f[1], 10, 64)
-	return pages * uint64(os.Getpagesize())
-}
-
-// mappingRSS is the resident size of the file-backed mapping, from smaps.
-func mappingRSS(path string) uint64 {
-	b, err := os.ReadFile("/proc/self/smaps")
-	if err != nil {
-		return 0
-	}
-	lines := strings.Split(string(b), "\n")
-	var total uint64
-	want := false
-	for _, line := range lines {
-		if strings.Contains(line, path) {
-			want = true
-			continue
-		}
-		if want && strings.HasPrefix(line, "Rss:") {
-			f := strings.Fields(line)
-			if len(f) >= 2 {
-				kb, _ := strconv.ParseUint(f[1], 10, 64)
-				total += kb * 1024
-			}
-			want = false
-		}
-		if want && len(line) > 0 && !strings.Contains(line, ":") && !strings.HasPrefix(line, "VmFlags") {
-			// next mapping header without an Rss line
-			if strings.Contains(line, "-") {
-				want = false
-			}
-		}
-	}
-	return total
-}
 
 func TestSnapshotUncappedMapLoad(t *testing.T) {
 	dir := t.TempDir()
@@ -94,13 +47,6 @@ func TestSnapshotUncappedMapLoad(t *testing.T) {
 	if mt.n != n {
 		t.Fatalf("mapped rows %d", mt.n)
 	}
-	maps, err := os.ReadFile("/proc/self/maps")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(maps), path) {
-		t.Fatal("snapshot is not memory-mapped")
-	}
 	page := os.Getpagesize()
 	var touch int
 	for i := 0; i < len(mt.data); i += page {
@@ -109,15 +55,10 @@ func TestSnapshotUncappedMapLoad(t *testing.T) {
 	if touch == -1 {
 		t.Fatal("unreachable")
 	}
-	mappedRSS := mappingRSS(path)
-	procRSS := rssBytes()
-	t.Logf("SNAPSHOT_ROWS %d LOAD %s MAPPED_RSS_BYTES %d PROCESS_RSS_BYTES %d", n, load, mappedRSS, procRSS)
+	t.Logf("SNAPSHOT_ROWS %d LOAD %s", n, load)
+	assertSnapshotMemory(t, path)
 	if load > 3*time.Second {
 		t.Fatalf("load %s", load)
-	}
-	// The packed file is resident. A []Rec of this many rows would be several times larger.
-	if mappedRSS == 0 || mappedRSS > 96<<20 {
-		t.Fatalf("mapped rss %d", mappedRSS)
 	}
 	sample := snapIP(257).Addr()
 	rec, ok := mt.lookup(sample)
