@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +44,8 @@ func TestServeTLSHandshakeAndH2(t *testing.T) {
 		if !strings.Contains(s.H2, "1:4096") || !strings.Contains(s.H2, "|100|") {
 			t.Fatalf("h2 %q", s.H2)
 		}
-		if s.MSS <= 0 {
+		// Both SYN capture and the TCP_INFO fallback are Linux-only.
+		if runtime.GOOS == "linux" && s.MSS <= 0 {
 			t.Fatalf("mss %d (tcp_info should work without raw sockets)", s.MSS)
 		}
 	case <-time.After(4 * time.Second):
