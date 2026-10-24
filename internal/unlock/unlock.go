@@ -5,9 +5,13 @@
 package unlock
 
 import (
+	"compress/gzip"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -15,6 +19,7 @@ import (
 
 // Status values.
 const (
+	Abstain       = "abstain"
 	Yes           = "yes"
 	No            = "no"
 	Partial       = "partial"
@@ -27,11 +32,14 @@ const (
 
 // Result is one service.
 type Result struct {
-	Service  string `json:"service"`
-	Status   string `json:"status"`
-	Region   string `json:"region,omitempty"`
-	Method   string `json:"method,omitempty"`
-	Evidence string `json:"evidence,omitempty"`
+	Service    string `json:"service"`
+	Status     string `json:"status"`
+	Region     string `json:"region,omitempty"`
+	Method     string `json:"method,omitempty"`
+	Evidence   string `json:"evidence,omitempty"`
+	GoogleTLD  string `json:"google_tld,omitempty"`
+	YouTubeGL  string `json:"youtube_gl,omitempty"`
+	PlayRegion string `json:"play_region,omitempty"`
 }
 
 // Response is what a checker sees. The live client follows redirects and
@@ -108,78 +116,158 @@ func (e *Engine) one(ctx context.Context, id string) Result {
 	}
 }
 
-func (e *Engine) claude(ctx context.Context) Result {
-	r := e.Get.Get(ctx, "https://claude.ai/", browser())
+// assess requires recognizable evidence on an expected, non-challenge response.
+// A regional denial may legitimately use 403/451; other HTTP errors cannot vote.
+func assess(r Response, requested string, positive, denial bool, allowed ...string) (string, string) {
+	if issue := responseIssue(r, requested, allowed...); issue != "" {
+		return Abstain, issue
+	}
+	if positive && denial {
+		return Abstain, "conflicting availability markers"
+	}
+	if denial {
+		return No, "explicit regional denial"
+	}
+	if r.Status < 200 || r.Status >= 300 {
+		return Abstain, fmt.Sprintf("http status %d without regional denial", r.Status)
+	}
+	if positive {
+		return Yes, "recognized positive marker"
+	}
+	return Abstain, "unrecognized response; no availability evidence"
+}
+
+func responseIssue(r Response, requested string, allowed ...string) string {
 	if r.Err != nil {
-		return Result{Service: "claude", Status: ErrStatus, Evidence: r.Err.Error()}
+		return "request failed: " + r.Err.Error()
 	}
-	final := r.FinalURL
-	if strings.Contains(final, "app-unavailable-in-region") || strings.Contains(r.Body, "app-unavailable-in-region") {
-		return Result{Service: "claude", Status: No, Evidence: "redirected to app-unavailable-in-region", Method: e.method(ctx, "claude.ai")}
+	if (r.Status < 200 || r.Status >= 300) && r.Status != 403 && r.Status != 451 {
+		return fmt.Sprintf("unexpected http status %d", r.Status)
 	}
-	if r.Status >= 400 {
-		return Result{Service: "claude", Status: No, Evidence: "http error", Method: "native"}
+	final, err := url.Parse(r.FinalURL)
+	if err != nil || final.Scheme != "https" || final.User != nil {
+		return "missing or unexpected final URL"
 	}
-	region := e.traceRegion(ctx, "https://claude.ai/cdn-cgi/trace")
-	return Result{Service: "claude", Status: Yes, Region: region, Method: e.method(ctx, "claude.ai"), Evidence: "claude.ai stayed on claude.ai"}
+	expected := append([]string{requested}, allowed...)
+	match := false
+	for _, raw := range expected {
+		u, err := url.Parse(raw)
+		if err == nil && strings.EqualFold(final.Host, u.Host) && strings.TrimRight(final.EscapedPath(), "/") == strings.TrimRight(u.EscapedPath(), "/") && final.RawQuery == u.RawQuery {
+			match = true
+			break
+		}
+	}
+	if !match {
+		return "unexpected redirect"
+	}
+	if strings.TrimSpace(r.Body) == "" {
+		return "empty response"
+	}
+	if strings.EqualFold(r.Header.Get("Cf-Mitigated"), "challenge") {
+		return "captcha or challenge response"
+	}
+	low := strings.ToLower(r.Body)
+	for _, marker := range []string{"cf-turnstile", "checking your browser", "verify your browser", "enable javascript and cookies to continue", "cf-chl-", "/cdn-cgi/challenge-platform", "just a moment", "g-recaptcha", "hcaptcha", "unusual traffic", "verify you are human", "verify that you are human", "captcha", "challenge-platform"} {
+		if strings.Contains(low, marker) {
+			return "captcha or challenge response"
+		}
+	}
+	return ""
+}
+
+func regionalDenial(body string) bool {
+	low := strings.ToLower(body)
+	for _, marker := range []string{"not available in your country", "not available in your region", "unavailable in your region", "unsupported country", "unsupported_country", "unsupported region", "unsupported location", "not available in your location"} {
+		if strings.Contains(low, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) claude(ctx context.Context) Result {
+	const u = "https://claude.ai/"
+	r := e.Get.Get(ctx, u, browser())
+	status, evidence := assess(r, u, strings.Contains(r.Body, "Log in to Claude"), strings.Contains(r.Body, "app-unavailable-in-region") || r.FinalURL == "https://claude.ai/app-unavailable-in-region", "https://claude.ai/app-unavailable-in-region")
+	out := Result{Service: "claude", Status: status, Evidence: evidence}
+	if status != Abstain {
+		out.Method = e.method(ctx, "claude.ai")
+		out.Region = e.traceRegion(ctx, "https://claude.ai/cdn-cgi/trace")
+		if out.Region == "" {
+			return Result{Service: "claude", Status: Abstain, Evidence: "region trace failed or was unrecognized"}
+		}
+	}
+	return out
 }
 
 func (e *Engine) chatgpt(ctx context.Context) Result {
-	web := e.Get.Get(ctx, "https://api.openai.com/compliance/cookie_requirements", browser())
-	app := e.Get.Get(ctx, "https://ios.chat.openai.com/", browser())
-	if web.Err != nil && app.Err != nil {
-		return Result{Service: "chatgpt", Status: ErrStatus, Evidence: web.Err.Error()}
+	const webURL = "https://api.openai.com/compliance/cookie_requirements"
+	const appURL = "https://ios.chat.openai.com/"
+	web := e.Get.Get(ctx, webURL, browser())
+	app := e.Get.Get(ctx, appURL, browser())
+	var cookie struct {
+		RequiresCookieConsent *bool  `json:"requires_cookie_consent"`
+		Country               string `json:"country"`
 	}
-	webNo := strings.Contains(web.Body, "unsupported_country")
-	appNo := strings.Contains(app.Body, "VPN") || strings.Contains(strings.ToLower(app.Body), "not available")
-	region := e.traceRegion(ctx, "https://chatgpt.com/cdn-cgi/trace")
-	method := e.method(ctx, "chatgpt.com")
+	webPositive := json.Unmarshal([]byte(web.Body), &cookie) == nil && cookie.RequiresCookieConsent != nil && countryCode.MatchString(cookie.Country)
+	appPositive := strings.Contains(app.Body, "ChatGPT") && strings.Contains(app.Body, `href="https://auth.openai.com/authorize`)
+	ws, we := assess(web, webURL, webPositive, regionalDenial(web.Body))
+	as, ae := assess(app, appURL, appPositive, regionalDenial(app.Body))
+	if ws == Abstain || as == Abstain {
+		return Result{Service: "chatgpt", Status: Abstain, Evidence: "web: " + we + "; app: " + ae}
+	}
+	status := Yes
 	switch {
-	case webNo && appNo:
-		return Result{Service: "chatgpt", Status: No, Region: region, Method: method, Evidence: "web unsupported_country and app blocked"}
-	case webNo && !appNo:
-		return Result{Service: "chatgpt", Status: AppOnly, Region: region, Method: method, Evidence: "web unsupported, app open"}
-	case !webNo && appNo:
-		return Result{Service: "chatgpt", Status: WebOnly, Region: region, Method: method, Evidence: "app blocked, web open"}
-	default:
-		return Result{Service: "chatgpt", Status: Yes, Region: region, Method: method, Evidence: "web and app open"}
+	case ws == No && as == No:
+		status = No
+	case ws == No:
+		status = AppOnly
+	case as == No:
+		status = WebOnly
 	}
+	region := e.traceRegion(ctx, "https://chatgpt.com/cdn-cgi/trace")
+	if region == "" {
+		return Result{Service: "chatgpt", Status: Abstain, Evidence: "region trace failed or was unrecognized"}
+	}
+	return Result{Service: "chatgpt", Status: status, Region: region, Method: e.method(ctx, "chatgpt.com"), Evidence: "web=" + ws + " app=" + as}
 }
 
+var countryCode = regexp.MustCompile(`^[A-Z]{2}$`)
+
 func (e *Engine) gemini(ctx context.Context) Result {
-	r := e.Get.Get(ctx, "https://gemini.google.com/", browser())
-	if r.Err != nil {
-		return Result{Service: "gemini", Status: ErrStatus, Evidence: r.Err.Error()}
-	}
-	if strings.Contains(r.Body, "45631641,null,true") || strings.Contains(r.Body, "gemini") && r.Status < 400 && !strings.Contains(strings.ToLower(r.Body), "not available") {
-		region := ""
+	const u = "https://gemini.google.com/"
+	r := e.Get.Get(ctx, u, browser())
+	status, evidence := assess(r, u, strings.Contains(r.Body, "45631641,null,true"), regionalDenial(r.Body))
+	out := Result{Service: "gemini", Status: status, Evidence: evidence}
+	if status != Abstain {
+		out.Method = e.method(ctx, "gemini.google.com")
 		if m := regexp.MustCompile(`,2,1,200,"([A-Z]{2,3})"`).FindStringSubmatch(r.Body); len(m) == 2 {
-			region = m[1]
+			out.Region = m[1]
 		}
-		return Result{Service: "gemini", Status: Yes, Region: region, Method: e.method(ctx, "gemini.google.com"), Evidence: "gemini page available"}
 	}
-	return Result{Service: "gemini", Status: No, Method: e.method(ctx, "gemini.google.com"), Evidence: "gemini unavailable marker"}
+	return out
 }
 
 func (e *Engine) tiktok(ctx context.Context) Result {
+	const u = "https://www.tiktok.com/"
 	h := browser()
-	delete(h, "Accept-Encoding")
-	first := e.Get.Get(ctx, "https://www.tiktok.com/", h)
-	region := regionField(first.Body)
-	if region == "" {
-		h2 := browser()
-		h2["Accept-Encoding"] = "gzip"
-		second := e.Get.Get(ctx, "https://www.tiktok.com/", h2)
-		region = regionField(second.Body)
-		if region != "" {
-			return Result{Service: "tiktok", Status: IDC, Region: region, Method: e.method(ctx, "www.tiktok.com"), Evidence: "region only present when gzip is requested"}
-		}
-		if first.Err != nil {
-			return Result{Service: "tiktok", Status: ErrStatus, Evidence: first.Err.Error()}
-		}
-		return Result{Service: "tiktok", Status: No, Method: e.method(ctx, "www.tiktok.com"), Evidence: "no region in the page"}
+	first := e.Get.Get(ctx, u, h)
+	status, evidence := assess(first, u, regionField(first.Body) != "", regionalDenial(first.Body))
+	if status != Abstain {
+		return Result{Service: "tiktok", Status: status, Region: regionField(first.Body), Method: e.method(ctx, "www.tiktok.com"), Evidence: evidence}
 	}
-	return Result{Service: "tiktok", Status: Yes, Region: region, Method: e.method(ctx, "www.tiktok.com"), Evidence: "region in the first response"}
+	// Only retry an otherwise healthy, unrecognized page. A failed first request
+	// must not be hidden by a successful fallback.
+	if issue := responseIssue(first, u); issue != "" || first.Status != http.StatusOK {
+		return Result{Service: "tiktok", Status: Abstain, Evidence: evidence}
+	}
+	h["Accept-Encoding"] = "gzip"
+	second := e.Get.Get(ctx, u, h)
+	secondStatus, secondEvidence := assess(second, u, regionField(second.Body) != "", regionalDenial(second.Body))
+	if secondStatus == Yes {
+		return Result{Service: "tiktok", Status: IDC, Region: regionField(second.Body), Method: e.method(ctx, "www.tiktok.com"), Evidence: "region only present when gzip is requested"}
+	}
+	return Result{Service: "tiktok", Status: Abstain, Evidence: "first: " + evidence + "; fallback: " + secondEvidence}
 }
 
 var regionRe = regexp.MustCompile(`"region"\s*:\s*"([A-Z]{2})"`)
@@ -193,31 +281,29 @@ func regionField(body string) string {
 }
 
 func (e *Engine) netflix(ctx context.Context) Result {
-	orig := e.Get.Get(ctx, "https://www.netflix.com/title/81280792", browser())
-	other := e.Get.Get(ctx, "https://www.netflix.com/title/70143836", browser())
-	if orig.Err != nil && other.Err != nil {
-		return Result{Service: "netflix", Status: ErrStatus, Evidence: orig.Err.Error()}
+	const original = "https://www.netflix.com/title/81280792"
+	const licensed = "https://www.netflix.com/title/70143836"
+	orig := e.Get.Get(ctx, original, browser())
+	other := e.Get.Get(ctx, licensed, browser())
+	os, oe := assess(orig, original, availableTitle(orig.Body), regionalDenial(orig.Body))
+	ls, le := assess(other, licensed, availableTitle(other.Body), regionalDenial(other.Body))
+	if os == Abstain || ls == Abstain {
+		return Result{Service: "netflix", Status: Abstain, Evidence: "original: " + oe + "; licensed: " + le}
 	}
-	origOK := availableTitle(orig.Body, orig.Status)
-	otherOK := availableTitle(other.Body, other.Status)
-	region := netflixRegion(orig.Body + other.Body)
-	method := e.method(ctx, "www.netflix.com")
+	status := Partial
 	switch {
-	case origOK && otherOK:
-		return Result{Service: "netflix", Status: Yes, Region: region, Method: method, Evidence: "original and licensed titles play"}
-	case origOK && !otherOK:
-		return Result{Service: "netflix", Status: OriginalsOnly, Region: region, Method: method, Evidence: "only the Netflix original title is available"}
-	default:
-		return Result{Service: "netflix", Status: No, Region: region, Method: method, Evidence: "titles unavailable"}
+	case os == Yes && ls == Yes:
+		status = Yes
+	case os == Yes && ls == No:
+		status = OriginalsOnly
+	case os == No && ls == No:
+		status = No
 	}
+	return Result{Service: "netflix", Status: status, Region: netflixRegion(orig.Body + other.Body), Method: e.method(ctx, "www.netflix.com"), Evidence: "original=" + os + " licensed=" + ls}
 }
 
-func availableTitle(body string, status int) bool {
-	l := strings.ToLower(body)
-	if strings.Contains(l, "oh no") || strings.Contains(l, "not available") || strings.Contains(l, "unavailable") {
-		return false
-	}
-	return status > 0 && status < 400 && body != ""
+func availableTitle(body string) bool {
+	return regexp.MustCompile(`"isPlayable"\s*:\s*true`).MatchString(body)
 }
 
 func netflixRegion(body string) string {
@@ -228,43 +314,59 @@ func netflixRegion(body string) string {
 }
 
 func (e *Engine) googleRegion(ctx context.Context) Result {
-	r := e.Get.Get(ctx, "https://www.google.com/", browser())
-	yt := e.Get.Get(ctx, "https://www.youtube.com/premium", browser())
-	play := e.Get.Get(ctx, "https://play.google.com/store", browser())
-	final := strings.ToLower(r.FinalURL + " " + yt.FinalURL)
-	sent := strings.Contains(final, "google.cn") || strings.Contains(final, "google.com.hk") || strings.Contains(strings.ToLower(r.Body), "google.com.hk")
-	tld := "google.com"
-	if strings.Contains(final, "google.cn") {
-		tld = "google.cn"
-	} else if strings.Contains(final, "google.com.hk") {
-		tld = "google.com.hk"
+	const google = "https://www.google.com/"
+	const youtube = "https://www.youtube.com/premium"
+	const store = "https://play.google.com/store"
+	r := e.Get.Get(ctx, google, browser())
+	yt := e.Get.Get(ctx, youtube, browser())
+	play := e.Get.Get(ctx, store, browser())
+	for _, check := range []struct {
+		r       Response
+		u       string
+		allowed []string
+	}{
+		{r, google, []string{"https://www.google.cn/", "https://google.cn/", "https://www.google.com.hk/", "https://google.com.hk/"}},
+		{yt, youtube, nil}, {play, store, nil},
+	} {
+		if issue := responseIssue(check.r, check.u, check.allowed...); issue != "" {
+			return Result{Service: "google_region", Status: Abstain, Evidence: check.u + ": " + issue}
+		}
+		if check.r.Status < 200 || check.r.Status >= 300 {
+			return Result{Service: "google_region", Status: Abstain, Evidence: "google region request did not succeed"}
+		}
 	}
-	gl := ""
+	final, _ := url.Parse(r.FinalURL) // validated above, exact host matching only
+	tld := strings.TrimPrefix(strings.ToLower(final.Hostname()), "www.")
+	sent := tld == "google.cn" || tld == "google.com.hk"
+	gl, playRegion := "", ""
 	if m := regexp.MustCompile(`INNERTUBE_CONTEXT_GL["']?\s*[:=]\s*["']([A-Z]{2})`).FindStringSubmatch(yt.Body); len(m) == 2 {
 		gl = m[1]
 	}
-	playRegion := ""
 	if m := regexp.MustCompile(`"country"\s*:\s*"([A-Z]{2})"`).FindStringSubmatch(play.Body); len(m) == 2 {
 		playRegion = m[1]
 	}
-	status := Yes
-	if sent || gl == "CN" || playRegion == "CN" {
-		status = No
-		sent = true
+	googlePositive := strings.Contains(r.Body, `name="q"`) && strings.Contains(r.Body, "/search")
+	if (!sent && !googlePositive) || gl == "" || playRegion == "" {
+		return Result{Service: "google_region", Status: Abstain, Evidence: "unrecognized Google, YouTube or Play region response"}
 	}
-	ev := "google tld " + tld
-	return Result{Service: "google_region", Status: status, Region: first(gl, playRegion), Method: "native", Evidence: ev + " sent_to_china=" + boolStr(sent)}
+	// Non-China evidence must agree; disagreement cannot establish a clean region.
+	if !sent && gl != playRegion {
+		return Result{Service: "google_region", Status: Abstain, Evidence: "conflicting YouTube and Play regions"}
+	}
+	sent = sent || gl == "CN" || playRegion == "CN"
+	status := Yes
+	if sent {
+		status = No
+	}
+	return Result{Service: "google_region", Status: status, Region: gl, GoogleTLD: tld, YouTubeGL: gl, PlayRegion: playRegion, Method: "native", Evidence: "google tld " + tld + " sent_to_china=" + boolStr(sent)}
 }
 
 func (e *Engine) captcha(ctx context.Context) Result {
-	r := e.Get.Get(ctx, "https://www.google.com/search?q=ipd", browser())
-	if r.Err != nil {
-		return Result{Service: "google_captcha", Status: ErrStatus, Evidence: r.Err.Error()}
-	}
-	if strings.Contains(strings.ToLower(r.Body), "unusual traffic") || strings.Contains(r.Body, "g-recaptcha") {
-		return Result{Service: "google_captcha", Status: No, Evidence: "unusual traffic interstitial", Method: "native"}
-	}
-	return Result{Service: "google_captcha", Status: Yes, Evidence: "no captcha interstitial", Method: "native"}
+	const u = "https://www.google.com/search?q=ipd"
+	r := e.Get.Get(ctx, u, browser())
+	positive := strings.Contains(r.Body, `id="search"`) && strings.Contains(r.Body, "href=")
+	status, evidence := assess(r, u, positive, false)
+	return Result{Service: "google_captcha", Status: status, Evidence: evidence, Method: "native"}
 }
 
 type simpleSpec struct {
@@ -273,75 +375,73 @@ type simpleSpec struct {
 }
 
 var simple = map[string]simpleSpec{
-	"grok":            {id: "grok", url: "https://grok.com/", host: "grok.com", no: "not available in your region|unsupported region|unavailable in your"},
-	"copilot":         {id: "copilot", url: "https://copilot.microsoft.com/", host: "copilot.microsoft.com", no: "not available|unavailable in your region"},
+	"grok":            {id: "grok", url: "https://grok.com/", host: "grok.com", no: "not available in your region|unsupported region|unavailable in your region"},
+	"copilot":         {id: "copilot", url: "https://copilot.microsoft.com/", host: "copilot.microsoft.com", no: "not available in your region|unavailable in your region"},
 	"meta_ai":         {id: "meta_ai", url: "https://www.meta.ai/", host: "www.meta.ai", yes: "KadabraRootContainer", no: "AbraGeoBlockedErrorRoot"},
-	"perplexity":      {id: "perplexity", url: "https://www.perplexity.ai/", host: "www.perplexity.ai", no: "unsupported|not available in your region"},
+	"perplexity":      {id: "perplexity", url: "https://www.perplexity.ai/", host: "www.perplexity.ai", no: "not available in your region"},
 	"disney":          {id: "disney", url: "https://www.disneyplus.com/", host: "www.disneyplus.com", no: "not available in your region|unsupported location"},
-	"youtube_premium": {id: "youtube_premium", url: "https://www.youtube.com/premium", host: "www.youtube.com", no: "not available in your country|google.cn|google.com.hk"},
+	"youtube_premium": {id: "youtube_premium", url: "https://www.youtube.com/premium", host: "www.youtube.com", no: "not available in your country"},
 	"youtube_cdn":     {id: "youtube_cdn", url: "https://redirector.googlevideo.com/report_mapping?di=no", host: "redirector.googlevideo.com"},
-	"prime":           {id: "prime", url: "https://www.primevideo.com/", host: "www.primevideo.com", no: "isServiceRestricted\":true|not available"},
+	"prime":           {id: "prime", url: "https://www.primevideo.com/", host: "www.primevideo.com", no: "isServiceRestricted\":true|not available in your country"},
 	"hbo_max":         {id: "hbo_max", url: "https://www.max.com/", host: "www.max.com", no: "not available in your region|geo-blocked"},
-	"hulu":            {id: "hulu", url: "https://www.hulu.com/", host: "www.hulu.com", no: "not available in your location|geographic"},
+	"hulu":            {id: "hulu", url: "https://www.hulu.com/", host: "www.hulu.com", no: "not available in your location|not available in your region"},
 	"spotify":         {id: "spotify", url: "https://open.spotify.com/", host: "open.spotify.com", no: "not available in your country"},
-	"reddit":          {id: "reddit", url: "https://www.reddit.com/", host: "www.reddit.com", no: "blocked by network security|you've been blocked"},
-	"bing":            {id: "bing", url: "https://www.bing.com/", host: "www.bing.com", no: "cn.bing.com"},
+	"reddit":          {id: "reddit", url: "https://www.reddit.com/", host: "www.reddit.com"},
+	"bing":            {id: "bing", url: "https://www.bing.com/", host: "www.bing.com"},
 	"apple":           {id: "apple", url: "https://gspe1-ssl.ls.apple.com/pep/gcc", host: "gspe1-ssl.ls.apple.com"},
-	"wikipedia":       {id: "wikipedia", url: "https://en.wikipedia.org/w/index.php?title=Wikipedia:Sandbox&action=edit", host: "en.wikipedia.org", no: "editing restricted|you are not allowed"},
+	"wikipedia":       {id: "wikipedia", url: "https://en.wikipedia.org/w/index.php?title=Wikipedia:Sandbox&action=edit", host: "en.wikipedia.org"},
 	"steam":           {id: "steam", url: "https://store.steampowered.com/", host: "store.steampowered.com"},
-	"instagram_music": {id: "instagram_music", url: "https://www.instagram.com/reels/audio/", host: "www.instagram.com", no: "not available"},
-	"bbc_iplayer":     {id: "bbc_iplayer", url: "https://www.bbc.co.uk/iplayer", host: "www.bbc.co.uk", no: "not available|outside the uk"},
-	"bahamut":         {id: "bahamut", url: "https://ani.gamer.com.tw/", host: "ani.gamer.com.tw", no: "不支援您的地區|not available"},
-	"abema":           {id: "abema", url: "https://abema.tv/", host: "abema.tv", no: "not available in your region|海外"},
+	"instagram_music": {id: "instagram_music", url: "https://www.instagram.com/reels/audio/", host: "www.instagram.com", no: "not available in your country"},
+	"bbc_iplayer":     {id: "bbc_iplayer", url: "https://www.bbc.co.uk/iplayer", host: "www.bbc.co.uk", no: "not available in your country|outside the uk"},
+	"bahamut":         {id: "bahamut", url: "https://ani.gamer.com.tw/", host: "ani.gamer.com.tw", no: "不支援您的地區|not available in your region"},
+	"abema":           {id: "abema", url: "https://abema.tv/", host: "abema.tv", no: "not available in your region|お住まいの地域ではご視聴できません"},
 }
 
 func (e *Engine) simple(ctx context.Context, spec simpleSpec) Result {
 	r := e.Get.Get(ctx, spec.url, browser())
-	if r.Err != nil {
-		return Result{Service: spec.id, Status: ErrStatus, Evidence: r.Err.Error()}
-	}
-	body := r.Body + " " + r.FinalURL
-	low := strings.ToLower(body)
-	if spec.yes != "" && strings.Contains(body, spec.yes) {
-		return Result{Service: spec.id, Status: Yes, Region: guessRegion(body), Method: e.method(ctx, spec.host), Evidence: "positive marker"}
-	}
-	if spec.no != "" {
-		for _, part := range strings.Split(spec.no, "|") {
-			if part != "" && strings.Contains(low, strings.ToLower(part)) {
-				return Result{Service: spec.id, Status: No, Method: e.method(ctx, spec.host), Evidence: "matched " + part}
-			}
+	positive := spec.yes != "" && strings.Contains(r.Body, spec.yes)
+	denial := regionalDenial(r.Body)
+	for _, marker := range strings.Split(spec.no, "|") {
+		if marker != "" && strings.Contains(strings.ToLower(r.Body), strings.ToLower(marker)) {
+			denial = true
 		}
 	}
-	if spec.id == "apple" {
+	region := ""
+	switch spec.id {
+	case "apple":
 		cc := strings.TrimSpace(r.Body)
-		if len(cc) >= 2 && len(cc) <= 3 {
-			return Result{Service: "apple", Status: Yes, Region: strings.ToUpper(cc[:2]), Method: "native", Evidence: "pep/gcc body"}
+		if countryCode.MatchString(cc) {
+			positive = true
+			region = cc
+		}
+	case "youtube_cdn":
+		if m := regexp.MustCompile(`country=([A-Z]{2})\b`).FindStringSubmatch(r.Body); len(m) == 2 {
+			positive = true
+			region = m[1]
+		}
+	case "steam":
+		if m := regexp.MustCompile(`"currency"\s*:\s*"([A-Z]{3})"`).FindStringSubmatch(r.Body); len(m) == 2 {
+			positive = true
+			region = m[1]
+		}
+	case "prime":
+		var territory struct {
+			Country    string `json:"currentTerritory"`
+			Restricted *bool  `json:"isServiceRestricted"`
+		}
+		if json.Unmarshal([]byte(r.Body), &territory) == nil && countryCode.MatchString(territory.Country) && territory.Restricted != nil {
+			positive = !*territory.Restricted
+			denial = denial || *territory.Restricted
+			region = territory.Country
 		}
 	}
-	if spec.id == "youtube_cdn" {
-		if m := regexp.MustCompile(`country=([A-Z]{2})`).FindStringSubmatch(r.Body); len(m) == 2 {
-			return Result{Service: spec.id, Status: Yes, Region: m[1], Method: "native", Evidence: "report_mapping"}
-		}
+	status, evidence := assess(r, spec.url, positive, denial)
+	out := Result{Service: spec.id, Status: status, Evidence: evidence}
+	if status != Abstain {
+		out.Region = first(region, guessRegion(r.Body))
+		out.Method = e.method(ctx, spec.host)
 	}
-	if spec.id == "steam" {
-		if m := regexp.MustCompile(`"currency":"([A-Z]{3})"`).FindStringSubmatch(r.Body); len(m) == 2 {
-			return Result{Service: "steam", Status: Yes, Region: m[1], Method: e.method(ctx, spec.host), Evidence: "store currency"}
-		}
-	}
-	if spec.id == "prime" {
-		if m := regexp.MustCompile(`"currentTerritory"\s*:\s*"([A-Z]{2})"`).FindStringSubmatch(r.Body); len(m) == 2 {
-			restricted := strings.Contains(r.Body, `"isServiceRestricted":true`)
-			st := Yes
-			if restricted {
-				st = No
-			}
-			return Result{Service: "prime", Status: st, Region: m[1], Method: e.method(ctx, spec.host), Evidence: "currentTerritory"}
-		}
-	}
-	if r.Status >= 400 {
-		return Result{Service: spec.id, Status: No, Method: e.method(ctx, spec.host), Evidence: "http status"}
-	}
-	return Result{Service: spec.id, Status: Yes, Region: guessRegion(body), Method: e.method(ctx, spec.host), Evidence: "no block marker"}
+	return out
 }
 
 func (e *Engine) method(ctx context.Context, host string) string {
@@ -357,9 +457,15 @@ func (e *Engine) method(ctx context.Context, host string) string {
 
 func (e *Engine) traceRegion(ctx context.Context, u string) string {
 	r := e.Get.Get(ctx, u, nil)
+	if responseIssue(r, u) != "" || r.Status != http.StatusOK {
+		return ""
+	}
 	for _, line := range strings.Split(r.Body, "\n") {
 		if strings.HasPrefix(line, "loc=") {
-			return strings.TrimPrefix(line, "loc=")
+			cc := strings.TrimPrefix(line, "loc=")
+			if countryCode.MatchString(cc) {
+				return cc
+			}
 		}
 	}
 	return ""
@@ -416,15 +522,32 @@ func (g LiveGetter) Get(ctx context.Context, rawURL string, headers map[string]s
 		return Response{Err: err}
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+	var reader io.Reader = resp.Body
+	encoding := resp.Header.Get("Content-Encoding")
+	if encoding != "" && !strings.EqualFold(encoding, "identity") && !strings.EqualFold(encoding, "gzip") {
+		return Response{Err: fmt.Errorf("unsupported content encoding %q", encoding)}
+	}
+	if strings.EqualFold(encoding, "gzip") {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return Response{Err: err}
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	const maxBody = 256 << 10
+	b, readErr := io.ReadAll(io.LimitReader(reader, maxBody+1))
+	if len(b) > maxBody {
+		readErr = fmt.Errorf("response exceeds %d bytes", maxBody)
+	}
 	final := rawURL
 	if resp.Request != nil && resp.Request.URL != nil {
 		final = resp.Request.URL.String()
 	}
-	return Response{Status: resp.StatusCode, Body: string(b), FinalURL: final, Header: resp.Header}
+	return Response{Status: resp.StatusCode, Body: string(b), FinalURL: final, Header: resp.Header, Err: readErr}
 }
 
 // SentToChina reads a google_region result.
 func SentToChina(r Result) bool {
-	return strings.Contains(r.Evidence, "sent_to_china=true") || r.Status == No && r.Service == "google_region"
+	return r.Service == "google_region" && r.Status == No && strings.Contains(r.Evidence, "sent_to_china=true")
 }

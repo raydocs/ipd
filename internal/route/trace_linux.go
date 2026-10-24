@@ -24,25 +24,33 @@ func platformTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, err
 		notes = append(notes, "udp: "+err.Error())
 	}
 	if realHops(hops) > 0 {
-		return hops, nil
+		return hops, err
 	}
 	ihops, ierr := icmpTrace(ctx, dst, maxHops)
 	if ierr != nil {
 		notes = append(notes, "icmp: "+ierr.Error())
-	} else if realHops(ihops) > realHops(hops) {
-		return ihops, nil
+	}
+	if realHops(ihops) > realHops(hops) {
+		return ihops, ierr
 	}
 	thops, terr := tcpTrace(ctx, dst, maxHops)
 	if terr != nil {
 		notes = append(notes, "tcp: "+terr.Error())
-	} else if realHops(thops) > 0 {
-		return thops, nil
+	}
+	if realHops(thops) > 0 {
+		return thops, terr
 	}
 	if realHops(hops) > 0 {
-		return hops, nil
+		return hops, err
 	}
 	if len(notes) == 0 {
 		notes = append(notes, "no icmp time-exceeded")
+	}
+	if len(ihops) > len(hops) {
+		hops = ihops
+	}
+	if len(thops) > len(hops) {
+		hops = thops
 	}
 	return hops, fmt.Errorf("%s", joinNotes(notes))
 }
@@ -54,6 +62,8 @@ func joinNotes(n []string) string {
 	}
 	return out
 }
+
+var errUDPTimeout = errors.New("UDP reply timeout")
 
 func udpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_UDP)
@@ -81,11 +91,18 @@ func udpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) {
 		sa := &unix.SockaddrInet4{Port: 33434 + ttl, Addr: ip}
 		start := time.Now()
 		if err := unix.Sendto(fd, []byte{0}, 0, sa); err != nil {
-			return nil, fmt.Errorf("%w", err)
+			return hops, fmt.Errorf("%w", err)
 		}
-		hop, done, err := recvErr(fd, 450*time.Millisecond)
+		hop, done, err := recvErr(fd, dst, 450*time.Millisecond)
 		if err != nil {
-			hops = append(hops, Hop{IP: "*"})
+			if hop.IP == "" {
+				hop.IP = "*"
+			}
+			hop.RTTMS = float64(time.Since(start).Microseconds()) / 1000
+			hops = append(hops, hop)
+			if !errors.Is(err, errUDPTimeout) {
+				return hops, err
+			}
 			stars++
 			if stars >= 4 && realHops(hops) == 0 {
 				return hops, fmt.Errorf("no icmp time-exceeded (udp)")
@@ -101,7 +118,7 @@ func udpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) {
 			return hops, nil
 		}
 	}
-	return hops, nil
+	return hops, fmt.Errorf("hop limit reached before destination")
 }
 
 func drainErr(fd int) {
@@ -115,7 +132,7 @@ func drainErr(fd int) {
 	}
 }
 
-func recvErr(fd int, wait time.Duration) (Hop, bool, error) {
+func recvErr(fd int, dst netip.Addr, wait time.Duration) (Hop, bool, error) {
 	// MSG_ERRQUEUE does not block. POLLERR is the signal that an ICMP error is queued.
 	pfd := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLERR}}
 	n, err := unix.Poll(pfd, int(wait.Milliseconds()))
@@ -123,7 +140,7 @@ func recvErr(fd int, wait time.Duration) (Hop, bool, error) {
 		return Hop{}, false, err
 	}
 	if n == 0 {
-		return Hop{}, false, fmt.Errorf("timeout")
+		return Hop{}, false, errUDPTimeout
 	}
 	var buf [1500]byte
 	var oob [512]byte
@@ -135,35 +152,12 @@ func recvErr(fd int, wait time.Duration) (Hop, bool, error) {
 	if err != nil {
 		return Hop{}, false, err
 	}
-	var hop Hop
-	done := false
 	for _, m := range msgs {
-		if m.Header.Level != unix.IPPROTO_IP || m.Header.Type != unix.IP_RECVERR || len(m.Data) < 16 {
-			continue
-		}
-		typ := m.Data[5]
-		if typ == 3 {
-			done = true
-		}
-		if ip := offenderIP(m.Data[16:]); ip != "" {
-			hop.IP = ip
+		if m.Header.Level == unix.IPPROTO_IP && m.Header.Type == unix.IP_RECVERR {
+			return parseUDPExtendedError(m.Data, dst)
 		}
 	}
-	if hop.IP == "" {
-		hop.IP = "*"
-	}
-	return hop, done, nil
-}
-
-func offenderIP(b []byte) string {
-	if len(b) < 8 {
-		return ""
-	}
-	family := binary.NativeEndian.Uint16(b[:2])
-	if family != unix.AF_INET {
-		return ""
-	}
-	return net.IP(b[4:8]).String()
+	return Hop{}, false, fmt.Errorf("missing UDP extended error")
 }
 
 func icmpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) {

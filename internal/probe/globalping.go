@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -343,11 +344,12 @@ type gpResult struct {
 		Network string  `json:"network"`
 	} `json:"probe"`
 	Result struct {
-		Status     string  `json:"status"`
-		Raw        string  `json:"rawOutput"`
-		StatusCode int     `json:"statusCode"`
-		Hops       []gpHop `json:"hops"`
-		Stats      struct {
+		Status          string  `json:"status"`
+		Raw             string  `json:"rawOutput"`
+		StatusCode      int     `json:"statusCode"`
+		ResolvedAddress string  `json:"resolvedAddress"`
+		Hops            []gpHop `json:"hops"`
+		Stats           struct {
 			Loss float64 `json:"loss"`
 			Avg  float64 `json:"avg"`
 		} `json:"stats"`
@@ -421,6 +423,9 @@ func decodeGP(doc gpDoc, q Query) []Sample {
 			RTTMS:    r.Result.Stats.Avg,
 		}
 		applyKind(&s, q, r)
+		if q.Kind == KindTrace {
+			s.TraceDestination, s.DestinationReached = traceCompletion(q.Target, r)
+		}
 		for _, h := range r.Result.Hops {
 			ip := h.ResolvedAddress
 			if ip == "" {
@@ -456,6 +461,35 @@ func decodeGP(doc gpDoc, q Query) []Sample {
 		out = append(out, s)
 	}
 	return out
+}
+
+// A finished measurement is not necessarily a finished route. Use the actual
+// destination address and a responding final hop; never resolve a hostname here
+// using a different vantage from the provider that performed the measurement.
+func traceCompletion(target string, r gpResult) (string, *bool) {
+	dst, err := netip.ParseAddr(target)
+	if err != nil {
+		dst, err = netip.ParseAddr(r.Result.ResolvedAddress)
+	}
+	if err != nil {
+		return "", nil
+	}
+	dst = dst.Unmap()
+	if r.Result.Status != "finished" {
+		return dst.String(), nil
+	}
+	reached := false
+	if len(r.Result.Hops) > 0 {
+		last := r.Result.Hops[len(r.Result.Hops)-1]
+		address := last.ResolvedAddress
+		if address == "" {
+			address = last.IP
+		}
+		ip, err := netip.ParseAddr(address)
+		replied := len(last.Timings) > 0 || last.Avg > 0 || last.Stats.Avg > 0
+		reached = err == nil && ip.Unmap() == dst && replied
+	}
+	return dst.String(), &reached
 }
 
 func applyKind(s *Sample, q Query, r gpResult) {
