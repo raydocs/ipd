@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"ipd/internal/nodes"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -81,6 +83,91 @@ func readDirectNodeSource(source string) (string, error) {
 	return source, nil
 }
 
+// Only this closed subset is implemented. Unknown keys (including arbitrary
+// metadata) are unsupported configuration, not inferred transport instructions.
+// In particular, node/global interface binding, chaining, resolver selection,
+// routing marks, IP-family policy, custom TLS and transports cannot be ignored.
+func directNodeFieldSupported(key string) bool {
+	switch key {
+	case "name", "type", "server", "port", "username", "password", "tls", "skip-cert-verify":
+		return true
+	default:
+		return false
+	}
+}
+
+type directNodeFile struct {
+	Proxies     []nodes.Proxy
+	unsupported bool
+}
+
+var errDirectNodeConfiguration = errors.New("invalid local node configuration; no requests sent")
+
+// Parse separately from nodes.Parse: that compatibility parser skips malformed
+// items and coerces bad fields. Here every original position must survive, or
+// the entire document fails before even its first valid node is scheduled.
+func parseDirectNodeFile(text string) (directNodeFile, error) {
+	var doc map[string]any
+	decoder := yaml.NewDecoder(strings.NewReader(text))
+	if decoder.Decode(&doc) != nil {
+		return directNodeFile{}, errDirectNodeConfiguration
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return directNodeFile{}, errDirectNodeConfiguration
+	}
+	raw, ok := doc["proxies"].([]any)
+	if !ok || len(raw) == 0 {
+		return directNodeFile{}, errDirectNodeConfiguration
+	}
+	if len(raw) > directNodeLimit {
+		return directNodeFile{}, fmt.Errorf("node measurement limit is %d; no requests sent", directNodeLimit)
+	}
+	f := directNodeFile{Proxies: make([]nodes.Proxy, len(raw))}
+	// No inherited global behavior is implemented. Even unfamiliar metadata is
+	// rejected conservatively; do not guess whether a future key affects dialing.
+	for key := range doc {
+		if key != "proxies" {
+			f.unsupported = true
+		}
+	}
+	for i, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return directNodeFile{}, errDirectNodeConfiguration
+		}
+		p := nodes.Proxy{Extra: m}
+		for key, dst := range map[string]*string{"name": &p.Name, "type": &p.Type, "server": &p.Server} {
+			value, ok := m[key].(string)
+			if !ok || strings.TrimSpace(value) == "" {
+				return directNodeFile{}, errDirectNodeConfiguration
+			}
+			*dst = value
+		}
+		port, ok := m["port"].(int)
+		if !ok || port < 1 || port > 65535 || strings.TrimSpace(p.Server) != p.Server || strings.ContainsAny(p.Server, " /@?#\\\r\n\t") {
+			return directNodeFile{}, errDirectNodeConfiguration
+		}
+		p.Port = port
+		for _, key := range []string{"username", "password"} {
+			if value, exists := m[key]; exists {
+				if _, ok := value.(string); !ok {
+					return directNodeFile{}, errDirectNodeConfiguration
+				}
+			}
+		}
+		for _, key := range []string{"tls", "skip-cert-verify"} {
+			if value, exists := m[key]; exists {
+				if _, ok := value.(bool); !ok {
+					return directNodeFile{}, errDirectNodeConfiguration
+				}
+			}
+		}
+		f.Proxies[i] = p
+	}
+	return f, nil
+}
+
 func (s *Service) measureDirectNodes(ctx context.Context, source string, opts directNodeOptions) (Report, error) {
 	ctx, cancel := context.WithTimeout(ctx, directNodeBatchTimeout)
 	defer cancel()
@@ -88,12 +175,9 @@ func (s *Service) measureDirectNodes(ctx context.Context, source string, opts di
 	if err != nil {
 		return Report{}, err
 	}
-	f, err := nodes.Parse(text)
+	f, err := parseDirectNodeFile(text)
 	if err != nil {
-		return Report{}, errors.New("could not parse local node configuration")
-	}
-	if len(f.Proxies) > directNodeLimit {
-		return Report{}, fmt.Errorf("node measurement limit is %d; no requests sent", directNodeLimit)
+		return Report{}, err
 	}
 	out := make([]directNodeObservation, len(f.Proxies))
 	offline := s.Cfg != nil && s.Cfg.Offline
@@ -104,6 +188,10 @@ func (s *Service) measureDirectNodes(ctx context.Context, source string, opts di
 		for i := range out {
 			out[i].Status = "skipped"
 			out[i].Error = "offline"
+		}
+	} else if f.unsupported {
+		for i := range out {
+			out[i].Status, out[i].Error = "unsupported", "unsupported"
 		}
 	} else {
 		// A fixed worker pool bounds both requests and goroutines. Each worker owns
@@ -169,6 +257,11 @@ func (s *Service) measureDirectNodes(ctx context.Context, source string, opts di
 }
 
 func directProxyURL(p nodes.Proxy) (*url.URL, string) {
+	for key := range p.Extra {
+		if !directNodeFieldSupported(key) {
+			return nil, "unsupported"
+		}
+	}
 	scheme := strings.ToLower(p.Type)
 	if scheme != "http" && scheme != "socks5" {
 		return nil, "unsupported"

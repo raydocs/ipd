@@ -493,9 +493,18 @@ func TestDirectNodesConcurrencyAndLimitBoundary(t *testing.T) {
 }
 
 func TestDirectNodesInvalidConfigNoRequests(t *testing.T) {
-	for _, extra := range []string{", skip-cert-verify: true", ", username: 123", ", tls: invalid"} {
-		text := "proxies: [{name: fixture-secret, type: http, server: 127.0.0.1, port: 1" + extra + "}]"
+	for _, tc := range []struct {
+		extra     string
+		malformed bool
+	}{{", skip-cert-verify: true", false}, {", username: 123", true}, {", tls: invalid", true}} {
+		text := "proxies: [{name: fixture-secret, type: http, server: 127.0.0.1, port: 1" + tc.extra + "}]"
 		rep, err := nodeService().MeasureDirectNodes(context.Background(), text)
+		if tc.malformed {
+			if err == nil {
+				t.Fatal("malformed known field accepted")
+			}
+			continue
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -600,5 +609,166 @@ func TestDirectNodesFixedBudgetsAndInputBounds(t *testing.T) {
 	}
 	if _, err := nodeService().MeasureDirectNodes(context.Background(), path); err == nil {
 		t.Fatal("oversized file accepted")
+	}
+}
+
+func TestDirectNodesUnsupportedConfigurationBeforeCONNECT(t *testing.T) {
+	for _, field := range []struct{ name, value string }{
+		{"dialer-proxy", "fixture-chain"}, {"interface-name", "fixture-interface"}, {"routing-mark", "123"}, {"ip-version", "ipv4"},
+		{"bind-address", "127.0.0.1"}, {"bind-interface", "fixture-interface"}, {"source-ip", "127.0.0.1"},
+		{"tfo", "true"}, {"mptcp", "true"}, {"udp", "false"}, {"udp-over-tcp", "true"},
+		{"sni", "fixture.invalid"}, {"servername", "fixture.invalid"}, {"alpn", "[h2]"}, {"client-fingerprint", "chrome"},
+		{"fingerprint", "fixture-secret"}, {"certificate", "fixture-secret"}, {"private-key", "fixture-secret"},
+		{"name-cert-verify", "fixture.invalid"}, {"grpc-opts", "{grpc-service-name: fixture-service}"}, {"network", "ws"},
+		{"headers", "{X-Fixture: fixture-secret}"}, {"http-opts", "{path: /fixture}"}, {"ws-opts", "{path: /fixture}"},
+		{"smux", "{enabled: true}"}, {"packet-encoding", "xudp"}, {"future-outbound-option", "fixture-secret"},
+		{"metadata", "{description: fixture-secret, dialer-proxy: fixture-metadata}"},
+	} {
+		t.Run("node/"+field.name, func(t *testing.T) {
+			srv, endpointHits := directTLS(t, `{"ip":"192.0.2.80"}`, 200)
+			u, _ := url.Parse(srv.URL)
+			p, connects := directHTTPProxy(t, srv.Listener.Addr().String(), u.Host, true)
+			text := strings.Replace(directYAML(p), "}\n", ", "+field.name+": "+field.value+"}\n", 1)
+			rep, err := nodeService().measureDirectNodes(context.Background(), text, directOptions(srv))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := directResults(t, rep)
+			if rep.Verdict != "abstain" || len(out) != 1 || out[0].Index != 1 || out[0].Status != "unsupported" || out[0].At != nil {
+				t.Errorf("unsupported configuration measured: %+v", rep)
+			}
+			if connects.Load() != 0 || endpointHits.Load() != 0 {
+				t.Errorf("unsupported configuration sent CONNECT=%d endpoint=%d", connects.Load(), endpointHits.Load())
+			}
+			blob, _ := json.Marshal(rep)
+			if strings.Contains(string(blob), "fixture-") {
+				t.Error("unsupported configuration leaked values")
+			}
+		})
+	}
+	for _, field := range []string{"interface-name: fixture-interface", "routing-mark: 123", "ip-version: ipv4", "bind-address: 127.0.0.1", "dns: {enable: true}", "ipv6: false", "tls: {certificate: fixture-secret}", "future-global-route-option: fixture-secret", "metadata: {description: fixture-secret}"} {
+		t.Run("root/"+strings.Split(field, ":")[0], func(t *testing.T) {
+			srv, endpointHits := directTLS(t, `{"ip":"192.0.2.80"}`, 200)
+			u, _ := url.Parse(srv.URL)
+			p, connects := directHTTPProxy(t, srv.Listener.Addr().String(), u.Host, true)
+			rep, err := nodeService().measureDirectNodes(context.Background(), field+"\n"+directYAML(p), directOptions(srv))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := directResults(t, rep)
+			if rep.Verdict != "abstain" || out[0].Status != "unsupported" || out[0].Index != 1 || out[0].At != nil {
+				t.Errorf("unsupported root configuration measured: %+v", rep)
+			}
+			blob, _ := json.Marshal(rep)
+			if strings.Contains(string(blob), "fixture-") {
+				t.Error("unsupported root configuration leaked values")
+			}
+			if connects.Load() != 0 || endpointHits.Load() != 0 {
+				t.Errorf("unsupported root configuration sent CONNECT=%d endpoint=%d", connects.Load(), endpointHits.Load())
+			}
+		})
+	}
+}
+
+func TestDirectNodesMalformedRawItemsRejectWholeBatch(t *testing.T) {
+	for _, kind := range []string{"scalar", "null", "sequence", "missing_name", "missing_type", "missing_server", "missing_port", "empty_name", "bad_name", "bad_type", "bad_server", "bad_port", "fractional_port", "out_of_range_port", "bad_username", "bad_password", "bad_tls", "bad_skip_verify", "duplicate_key", "non_string_key"} {
+		t.Run(kind, func(t *testing.T) {
+			srv, endpointHits := directTLS(t, `{"ip":"192.0.2.81"}`, 200)
+			u, _ := url.Parse(srv.URL)
+			p, connects := directHTTPProxy(t, srv.Listener.Addr().String(), u.Host, true)
+			entry := strings.TrimPrefix(directYAML(p), "proxies:\n")
+			bad := entry
+			switch kind {
+			case "scalar":
+				bad = "- fixture-secret-scalar\n"
+			case "null":
+				bad = "- null\n"
+			case "sequence":
+				bad = "- [fixture-secret]\n"
+			case "missing_name":
+				bad = strings.Replace(bad, "name: fixture-secret-name, ", "", 1)
+			case "missing_type":
+				bad = strings.Replace(bad, "type: http, ", "", 1)
+			case "missing_server":
+				bad = strings.Replace(bad, "server: 127.0.0.1, ", "", 1)
+			case "missing_port":
+				bad = strings.Replace(bad, fmt.Sprintf("port: %d, ", p.Port), "", 1)
+			case "empty_name":
+				bad = strings.Replace(bad, "name: fixture-secret-name", "name: ''", 1)
+			case "bad_name":
+				bad = strings.Replace(bad, "name: fixture-secret-name", "name: [fixture-secret]", 1)
+			case "bad_type":
+				bad = strings.Replace(bad, "type: http", "type: 123", 1)
+			case "bad_server":
+				bad = strings.Replace(bad, "server: 127.0.0.1", "server: [127.0.0.1]", 1)
+			case "bad_port":
+				bad = strings.Replace(bad, fmt.Sprintf("port: %d", p.Port), "port: fixture-secret", 1)
+			case "fractional_port":
+				bad = strings.Replace(bad, fmt.Sprintf("port: %d", p.Port), fmt.Sprintf("port: %d.5", p.Port), 1)
+			case "out_of_range_port":
+				bad = strings.Replace(bad, fmt.Sprintf("port: %d", p.Port), "port: 65536", 1)
+			case "bad_username":
+				bad = strings.Replace(bad, "username: fixture-user", "username: [fixture-secret]", 1)
+			case "bad_password":
+				bad = strings.Replace(bad, "password: fixture-secret-password", "password: null", 1)
+			case "bad_tls":
+				bad = strings.Replace(bad, "}\n", ", tls: fixture-secret}\n", 1)
+			case "bad_skip_verify":
+				bad = strings.Replace(bad, "}\n", ", skip-cert-verify: []}\n", 1)
+			case "duplicate_key":
+				bad = strings.Replace(bad, "}\n", ", name: fixture-secret-duplicate}\n", 1)
+			case "non_string_key":
+				bad = strings.Replace(bad, "}\n", ", 123: fixture-secret}\n", 1)
+			}
+			// A valid first item must not be sent before a later item fails validation;
+			// a valid third item must never be renumbered after skipping the second.
+			rep, err := nodeService().measureDirectNodes(context.Background(), "proxies:\n"+entry+bad+entry, directOptions(srv))
+			if err == nil {
+				t.Errorf("malformed raw list accepted/reindexed: %+v", rep)
+			} else if strings.Contains(err.Error(), "fixture-") {
+				t.Error("validation error leaked configuration")
+			}
+			if connects.Load() != 0 || endpointHits.Load() != 0 {
+				t.Errorf("malformed batch sent CONNECT=%d endpoint=%d", connects.Load(), endpointHits.Load())
+			}
+		})
+	}
+}
+
+func TestDirectNodesWhitelistKeepsOriginalPositions(t *testing.T) {
+	srv, endpointHits := directTLS(t, `{"ip":"192.0.2.82"}`, 200)
+	u, _ := url.Parse(srv.URL)
+	p, connects := directHTTPProxy(t, srv.Listener.Addr().String(), u.Host, true)
+	entry := strings.TrimPrefix(directYAML(p), "proxies:\n")
+	unsupported := strings.Replace(entry, "}\n", ", dialer-proxy: fixture-chain}\n", 1)
+	// name is inert metadata, even when its string mentions routing field names.
+	named := strings.Replace(entry, "name: fixture-secret-name", "name: 'dialer-proxy: interface-name fixture-secret'", 1)
+	text := "proxies:\n" + unsupported + named + strings.Replace(entry, "type: http", "type: vmess", 1)
+	rep, err := nodeService().measureDirectNodes(context.Background(), text, directOptions(srv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := directResults(t, rep)
+	if len(out) != 3 || out[0].Index != 1 || out[0].Status != "unsupported" || out[1].Index != 2 || out[1].Status != "measured" || out[1].EgressIP != "192.0.2.82" || out[2].Index != 3 || out[2].Status != "unsupported" || rep.Verdict != "ok_with_caveats" {
+		t.Fatalf("original positions or evidence lost: %+v", rep)
+	}
+	if connects.Load() != 1 || endpointHits.Load() != 1 {
+		t.Fatalf("only supported node should connect: %d/%d", connects.Load(), endpointHits.Load())
+	}
+	blob, _ := json.Marshal(rep)
+	if strings.Contains(string(blob), "fixture-") {
+		t.Fatal("metadata/credentials leaked")
+	}
+}
+
+func TestDirectNodesRejectsAdditionalYAMLDocuments(t *testing.T) {
+	srv, endpointHits := directTLS(t, `{"ip":"192.0.2.83"}`, 200)
+	u, _ := url.Parse(srv.URL)
+	p, connects := directHTTPProxy(t, srv.Listener.Addr().String(), u.Host, true)
+	if _, err := nodeService().measureDirectNodes(context.Background(), directYAML(p)+"---\n"+directYAML(p), directOptions(srv)); err == nil {
+		t.Fatal("second YAML document ignored")
+	}
+	if connects.Load() != 0 || endpointHits.Load() != 0 {
+		t.Fatal("multi-document input sent requests")
 	}
 }
