@@ -23,25 +23,33 @@ func platformTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, err
 		notes = append(notes, "udp: "+err.Error())
 	}
 	if realHops(hops) > 0 {
-		return hops, nil
+		return hops, err
 	}
 	ihops, ierr := icmpTrace(ctx, dst, maxHops)
 	if ierr != nil {
 		notes = append(notes, "icmp: "+ierr.Error())
-	} else if realHops(ihops) > realHops(hops) {
-		return ihops, nil
+	}
+	if realHops(ihops) > realHops(hops) {
+		return ihops, ierr
 	}
 	thops, terr := tcpTrace(ctx, dst, maxHops)
 	if terr != nil {
 		notes = append(notes, "tcp: "+terr.Error())
-	} else if realHops(thops) > 0 {
-		return thops, nil
+	}
+	if realHops(thops) > 0 {
+		return thops, terr
 	}
 	if realHops(hops) > 0 {
-		return hops, nil
+		return hops, err
 	}
 	if len(notes) == 0 {
 		notes = append(notes, "no icmp time-exceeded")
+	}
+	if len(ihops) > len(hops) {
+		hops = ihops
+	}
+	if len(thops) > len(hops) {
+		hops = thops
 	}
 	return hops, fmt.Errorf("%s", joinNotes(notes))
 }
@@ -80,7 +88,7 @@ func udpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) {
 		sa := &unix.SockaddrInet4{Port: 33434 + ttl, Addr: ip}
 		start := time.Now()
 		if err := unix.Sendto(fd, []byte{0}, 0, sa); err != nil {
-			return nil, fmt.Errorf("%w", err)
+			return hops, fmt.Errorf("%w", err)
 		}
 		hop, done, err := recvErr(fd, 450*time.Millisecond)
 		if err != nil {
@@ -100,7 +108,7 @@ func udpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) {
 			return hops, nil
 		}
 	}
-	return hops, nil
+	return hops, fmt.Errorf("hop limit reached before destination")
 }
 
 func drainErr(fd int) {
@@ -191,7 +199,7 @@ func icmpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) 
 		}
 		start := time.Now()
 		if _, err := c.WriteTo(b, &net.IPAddr{IP: dst.AsSlice()}); err != nil {
-			return nil, err
+			return hops, err
 		}
 		_ = c.SetReadDeadline(time.Now().Add(450 * time.Millisecond))
 		buf := make([]byte, 1500)
@@ -217,7 +225,7 @@ func icmpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) 
 			return hops, nil
 		}
 	}
-	return hops, nil
+	return hops, fmt.Errorf("hop limit reached before destination")
 }
 
 func tcpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) {
@@ -243,7 +251,7 @@ func tcpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) {
 		pkt := synPacket(ip, 443, 40000+ttl)
 		start := time.Now()
 		if err := unix.Sendto(tcpFD, pkt, 0, &unix.SockaddrInet4{Port: 443, Addr: ip}); err != nil {
-			return nil, err
+			return hops, err
 		}
 		hop, done, err := readRawICMP(icmpFD, dst, 450*time.Millisecond)
 		if err != nil {
@@ -259,7 +267,7 @@ func tcpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) {
 			return hops, nil
 		}
 	}
-	return hops, nil
+	return hops, fmt.Errorf("hop limit reached before destination")
 }
 
 func synPacket(dst [4]byte, dport, sport int) []byte {
