@@ -131,3 +131,38 @@ Darwin uses real system lsof locally. Linux runtime ownership behavior is a
 separate acceptance gate; Linux cross-compilation is not runtime proof. Author
 checks are not independent review. PR26 app integration remains separately
 blocked until this API increment is reviewed and accepted.
+
+### Actual author checks (Darwin, frozen code c0ccb0a)
+
+Environment: Darwin 25.5.0 arm64, Go 1.27.3, Node v26.12.1.
+Fetched/synchronized main: `3a0832284585118d473a7fd08fb4c924831f760b`.
+Code head: `c0ccb0a4d83e01403bef37c79257da97fd3e086d`; the following
+commit only records this evidence.
+
+- Exact PR23 `git archive 8331260` + only the new regression/helper files:
+  `go test ./internal/nodes -run '^TestRunnerLivePIDListenerLossRevokes$' -count=1 -v`
+  actually **FAILed** for both backends (exit 1). Both logs first record the
+  existing authenticated tunnel returning `fixture-positive`, with PID alive
+  at the listener-closed marker, then fail because endpoints remain valid.
+- `go test ./internal/nodes -run '^TestLive|^TestRunnerLivePID' -count=1`:
+  PASS (24.274s, before the final fail-fast invalid-channel gate).
+- `go test -race -p 1 ./internal/nodes -count=1`: PASS (40.451s), all nodes
+  tests, no race diagnostic.
+- `go test -p 1 ./... -count=1`: PASS, all packages (nodes 37.816s).
+- `node --test web/judge.test.mjs`: PASS, 1 test.
+- `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -c -o /tmp/ipd-live-nodes-linux-amd64.test ./internal/nodes`:
+  PASS **compile only**, no Linux runtime result.
+- `git diff --check`: PASS. The entire main-based diff is confined to
+  `internal/nodes`; no app/CLI, ROADMAP-STATUS, PR26 code/tests or old PR branches
+  were changed. All pre-existing nodes tests remain present.
+
+During test authoring the first new narrow run failed a deadline assertion that
+compared a query deadline to a timestamp taken *before* query-context construction.
+The assertion was corrected to validate the delivered bound and exact shorter
+caller deadline; no production timeout was increased or scenario removed.
+
+Evidence directory: `/tmp/ipd-live-ownership-api.5E4fKJ/` (receipt and raw before/after logs).
+The original PR26 arbiter fixture log remains
+`/tmp/ipd-pr26-arbiter.jkFQv3/arbiter-fixture.log` and was not modified.
+Independent review and Linux runtime verification are still outstanding. No
+app/CLI integration, PR merge, deployment, real-core or real-airport test was run.
