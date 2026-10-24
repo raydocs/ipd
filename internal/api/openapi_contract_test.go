@@ -123,7 +123,8 @@ func TestOpenAPIHandlerCoverageAndParameters(t *testing.T) {
 					t.Errorf("%s %s missing required path parameter %s", method, path, match[1])
 				}
 			}
-			if method == "post" && op["requestBody"] == nil {
+			// Session issuance is intentionally bodyless; all older POSTs consume a body.
+			if method == "post" && path != "/v1/dnsleak" && op["requestBody"] == nil {
 				t.Errorf("POST %s missing request body", path)
 			}
 		}
@@ -656,7 +657,6 @@ func TestOpenAPIReadPayloads(t *testing.T) {
 		{"/v1/asn/AS64496", "/v1/asn/{asn}"}, {"/v1/asn/not-an-asn", "/v1/asn/{asn}"},
 		{"/v1/prefix/192.0.2.0/24", "/v1/prefix/{cidr}"},
 		{"/v1/route/targets?scope=documentationfixture", "/v1/route/targets"},
-		{"/v1/dnsleak/documentationfixture", "/v1/dnsleak/{token}"},
 		{"/v1/fingerprint?ip=192.0.2.1", "/v1/fingerprint"},
 	} {
 		t.Run(tc.path, func(t *testing.T) {

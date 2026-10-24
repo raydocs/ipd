@@ -3,10 +3,12 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"ipd/internal/app"
+	"ipd/internal/leak"
 	"ipd/internal/mcp"
 	"ipd/internal/pow"
 	"ipd/internal/privacy"
@@ -68,6 +71,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/route/targets", s.targets)
 	mux.HandleFunc("POST /v1/latency", s.latency)
 	mux.HandleFunc("GET /v1/jobs/{id}", s.job)
+	mux.HandleFunc("POST /v1/dnsleak", s.dnsSessionCreate)
 	mux.HandleFunc("GET /v1/dnsleak/{token}", s.dnsleak)
 	mux.HandleFunc("POST /v1/report", s.report)
 	mux.HandleFunc("GET /r/{id}", s.share)
@@ -111,7 +115,41 @@ func (s *Server) favicon(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
+// dnsSessionPath checks every prefix, including ones later removed by "..".
+// In the escaped view, clean literal dot segments before unescaping each segment,
+// as ServeMux does: an encoded slash must not change how many segments ".." pops.
+func dnsSessionPath(p string, escaped bool) bool {
+	var stack []string
+	for _, segment := range strings.Split(p, "/") {
+		switch segment {
+		case "", ".":
+			continue
+		case "..":
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		default:
+			if escaped {
+				// EscapedPath always supplies valid escapes. Do not split or clean
+				// again after decoding: mux matching unescapes segments only once.
+				segment, _ = url.PathUnescape(segment)
+			}
+			stack = append(stack, segment)
+		}
+		if len(stack) >= 2 && stack[0] == "v1" && stack[1] == "dnsleak" {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) note(r *http.Request) {
+	// Retain the conservative decoded-path protection, and also inspect mux's
+	// escaped-segment view before logging (including redirects and rejected verbs).
+	if dnsSessionPath(r.URL.Path, false) || dnsSessionPath(r.URL.EscapedPath(), true) {
+		return
+	}
+
 	if s.Svc.DB == nil || s.Svc.Cfg == nil {
 		return
 	}
@@ -166,7 +204,10 @@ func (s *Server) writeSSE(w http.ResponseWriter, rep app.Report) {
 		rep = s.Svc.WithSnapshot(rep)
 	}
 	w.Header().Set("content-type", "text/event-stream")
-	w.Header().Set("cache-control", "no-cache")
+	// Session bearers require the stricter policy set by dnsSessionResponse.
+	if w.Header().Get("Cache-Control") != "no-store" {
+		w.Header().Set("cache-control", "no-cache")
+	}
 	b, _ := json.Marshal(rep)
 	fmt.Fprintf(w, "event: local\ndata: %s\n\n", b)
 	fmt.Fprintf(w, "event: done\ndata: {}\n\n")
@@ -365,12 +406,46 @@ func (s *Server) targets(w http.ResponseWriter, r *http.Request) {
 	s.write(w, r, 200, rep)
 }
 
-func (s *Server) dnsleak(w http.ResponseWriter, r *http.Request) {
-	rep := s.Svc.DNSLeak(r.Context(), 1)
-	if m, ok := rep.Data.(map[string]any); ok {
-		m["token"] = r.PathValue("token")
+func (s *Server) dnsSessionResponse(w http.ResponseWriter, r *http.Request, rep app.Report, err error) {
+	w.Header().Set("Cache-Control", "no-store")
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		if errors.Is(err, leak.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		if !errors.Is(err, leak.ErrNotFound) && !errors.Is(err, leak.ErrDisabled) && !errors.Is(err, leak.ErrCapacity) {
+			http.Error(w, "DNS session unavailable", http.StatusInternalServerError)
+			return
+		}
+		http.Error(w, err.Error(), status)
+		return
 	}
-	s.write(w, r, 200, rep)
+	// The generic text renderer compacts/truncates values. Session capabilities
+	// and observations must remain complete, including long names and IPv6/ECS.
+	// Keep this exception local to DNS; JSON/Markdown/SSE keep their wire schemas.
+	if r.URL.Query().Get("stream") != "1" && negotiate(r, true) == "text" {
+		rep = s.Svc.WithSnapshot(rep)
+		data, _ := json.Marshal(rep.Data)
+		rep.Data = nil
+		header, contentType := Render("text", rep)
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("X-IPD-Verdict", rep.Verdict)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "%sdata: %s\n", header, data)
+		return
+	}
+
+	s.write(w, r, http.StatusOK, rep)
+}
+
+func (s *Server) dnsSessionCreate(w http.ResponseWriter, r *http.Request) {
+	rep, err := s.Svc.CreateDNSSession()
+	s.dnsSessionResponse(w, r, rep, err)
+}
+
+func (s *Server) dnsleak(w http.ResponseWriter, r *http.Request) {
+	rep, err := s.Svc.DNSSession(r.PathValue("token"))
+	s.dnsSessionResponse(w, r, rep, err)
 }
 
 func (s *Server) sources(w http.ResponseWriter, r *http.Request) {

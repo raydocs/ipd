@@ -552,7 +552,7 @@ func serve(cfg *config.Config, lang locale) int {
 
 func aux(ctx context.Context, cfg *config.Config, svc *app.Service) {
 	go func() {
-		err := listen.DNS{Addr: cfg.DNSAddr, OnQuery: func(name, client string) {}}.Serve(ctx)
+		err := svc.DNSSessions.Serve(ctx, cfg.DNSAddr)
 		if err != nil && ctx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "dns %s: %v\n", cfg.DNSAddr, err)
 		}
