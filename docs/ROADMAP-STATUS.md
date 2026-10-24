@@ -85,5 +85,8 @@ runner 改进保持旧接口兼容，旧 handle 不可跨 run 复用；已观察
 [Draft #27](https://github.com/raydocs/ipd/pull/27) `f698099`，base main、依赖 #23。
 新增单次 run 的 Check/CheckAll/Done/Err、不透明身份绑定、有界后台监视及单向整批撤销；
 正常 Stop 与失败原因区分。原 lose-owner 旧版真实反证失败，子任务本地 race/Go/Node 通过。
-总控独立审查与 main 候选组合复测进行中，未验收；没有修改 #26/app/CLI，也没有宣称
+独立审查 approve；总控 nodes race 通过，组合 Go 首跑遇到未修改的 PoW 随机负例失败，保留日志后一次复测通过，Node 通过，验收 runner API 增量。独立实测 24 节点约 48 次查询/1.5s，100ms ticker 不是整批延迟保证。没有修改 #26/app/CLI，也没有宣称
 Linux runtime 或真实核心通过。用户态非原子及拨号窗口等边界仍适用。
+
+#27 验收后，#26 开始接入 run handle：拨号/请求/响应/采纳主动检查、Done 取消在途连接、
+发布前 CheckAll、失败清空整批结果。接线仍在进行，#26 尚未验收；不会以 API 存在替代应用回归通过。
