@@ -184,3 +184,27 @@ Runner PR23, CLI paths/options, HTTP/MCP/default Nodes, PR22 and parent summary 
 unchanged by this correction. No merge, main push, force, real core/airport,
 secret, public exit-service request or deployment. Fresh independent r2 and
 acceptance remain exclusively with the parent.
+
+### R1 correction executed checks (not independent acceptance)
+
+Production/test code at `6ca248fd7c582f40292e8e55e83c761fe0a2d02e`:
+
+- New before-fix integration regressions at `e0c7ae2`: **FAIL**, exit 1;
+  identical regressions after correction: PASS (`before.log`, `after.log`).
+- Reviewer's unchanged production counterexamples: PASS
+  (`reviewer-production-after.log`); temporary overlay removed.
+- `go test -p 1 ./internal/app ./internal/cli -run 'TestCore' -count=1`:
+  PASS (`narrow.log`).
+- `go test -race -p 1 ./internal/app ./internal/cli -run 'TestCore' -count=1`:
+  PASS (`race.log`).
+- `go test -p 1 ./... -count=1`: PASS (`full.log`).
+- `node --test web/judge.test.mjs`: PASS, 1/1 (`node.log`).
+- Separate owned detached worktree applied PR22 `a25cced` without conflicts;
+  `go test -p 1 ./internal/cli -count=1`: PASS (`compose22.log`).
+  Patch withdrawn, post-withdraw status empty, temporary worktree removed.
+- Diff from `e0c7ae2` is empty for `internal/nodes` and `internal/cli`;
+  `docs/ROADMAP-STATUS.md` still matches `origin/main`.
+
+All logs above are under `/tmp/ipd-pr25-r1-fix/`. This note is documentation only.
+PR25 stays Draft with base main and unchanged PR23 dependency. R1 was BLOCK;
+this is a correction handoff for the parent's fresh independent r2, not approval.
