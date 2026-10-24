@@ -103,17 +103,66 @@ type directNodeFile struct {
 
 var errDirectNodeConfiguration = errors.New("invalid local node configuration; no requests sent")
 
+// Check the representation tree before map decoding can erase duplicate keys,
+// expand merges, or resolve aliases. All aliases (including values) and merge
+// keys are refused; never follow Alias pointers, so cycles cannot bypass this
+// check. Apply the same rules inside unsupported fields, not just known nodes.
+func validDirectNodeYAML(n *yaml.Node) bool {
+	switch n.Kind {
+	case yaml.DocumentNode:
+		return len(n.Content) == 1 && validDirectNodeYAML(n.Content[0])
+	case yaml.MappingNode:
+		if n.Tag != "!!map" || len(n.Content)%2 != 0 {
+			return false
+		}
+		seen := make(map[string]bool, len(n.Content)/2)
+		for i := 0; i < len(n.Content); i += 2 {
+			key := n.Content[i]
+			// Value is already unquoted/unescaped. Tags and spelling must not
+			// create distinct keys that later decode to the same Go string.
+			if key.Kind != yaml.ScalarNode || key.Tag != "!!str" || key.Value == "<<" || seen[key.Value] {
+				return false
+			}
+			seen[key.Value] = true
+			if !validDirectNodeYAML(n.Content[i+1]) {
+				return false
+			}
+		}
+		return true
+	case yaml.SequenceNode:
+		if n.Tag != "!!seq" {
+			return false
+		}
+		for _, child := range n.Content {
+			if !validDirectNodeYAML(child) {
+				return false
+			}
+		}
+		return true
+	case yaml.ScalarNode:
+		switch n.Tag {
+		case "!!str", "!!bool", "!!int", "!!float", "!!null":
+			return true
+		}
+	}
+	return false
+}
+
 // Parse separately from nodes.Parse: that compatibility parser skips malformed
 // items and coerces bad fields. Here every original position must survive, or
 // the entire document fails before even its first valid node is scheduled.
 func parseDirectNodeFile(text string) (directNodeFile, error) {
-	var doc map[string]any
+	var rawDoc yaml.Node
 	decoder := yaml.NewDecoder(strings.NewReader(text))
-	if decoder.Decode(&doc) != nil {
+	if decoder.Decode(&rawDoc) != nil || !validDirectNodeYAML(&rawDoc) {
 		return directNodeFile{}, errDirectNodeConfiguration
 	}
-	var extra any
+	var extra yaml.Node
 	if decoder.Decode(&extra) != io.EOF {
+		return directNodeFile{}, errDirectNodeConfiguration
+	}
+	var doc map[string]any
+	if rawDoc.Decode(&doc) != nil {
 		return directNodeFile{}, errDirectNodeConfiguration
 	}
 	raw, ok := doc["proxies"].([]any)

@@ -83,10 +83,10 @@ func directTunnel(a net.Conn, reader io.Reader, target string) {
 	<-done
 }
 
-func directHTTPProxy(t *testing.T, target, expectedHost string, auth bool) (nodes.Proxy, *atomic.Int32) {
+func directHTTPProxy(t *testing.T, target, expectedHost string, auth bool, accepted ...*atomic.Int32) (nodes.Proxy, *atomic.Int32) {
 	t.Helper()
 	hits := new(atomic.Int32)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		want := "Basic " + base64.StdEncoding.EncodeToString([]byte("fixture-user:fixture-secret-password"))
 		if r.Method != "CONNECT" || r.Host != expectedHost || (auth && r.Header.Get("Proxy-Authorization") != want) {
@@ -101,6 +101,14 @@ func directHTTPProxy(t *testing.T, target, expectedHost string, auth bool) (node
 		io.WriteString(c, "HTTP/1.1 200 Connection Established\r\n\r\n")
 		directTunnel(c, rw, target)
 	}))
+	if len(accepted) > 0 {
+		srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+			if state == http.StateNew {
+				accepted[0].Add(1)
+			}
+		}
+	}
+	srv.Start()
 	t.Cleanup(srv.Close)
 	u, _ := url.Parse(srv.URL)
 	return proxyEntry(u.Host, "http"), hits
@@ -770,5 +778,126 @@ func TestDirectNodesRejectsAdditionalYAMLDocuments(t *testing.T) {
 	}
 	if connects.Load() != 0 || endpointHits.Load() != 0 {
 		t.Fatal("multi-document input sent requests")
+	}
+}
+
+// Exercise the production batch path, not only a parser helper: no valid peer
+// before or after a malformed node may reach even the proxy TCP listener.
+func TestDirectNodesYAMLStructureRejectsBeforeNetwork(t *testing.T) {
+	cases := []struct {
+		name  string
+		build func(string) string
+	}{
+		{"alias_tls_key", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "}\n", ", &k tls: fixture-secret-invalid, *k: false}\n", 1) + e
+		}},
+		{"alias_root_key", func(e string) string { return "&p proxies: [null]\n*p:\n" + e }},
+		{"alias_first_key", func(e string) string {
+			return "proxies:\n" + strings.Replace(e, "}\n", ", &k tls: fixture-secret-invalid, *k: false}\n", 1) + e
+		}},
+		{"alias_last_key", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "}\n", ", &k tls: fixture-secret-invalid, *k: false}\n", 1)
+		}},
+		{"tagged_duplicate", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "}\n", ", tls: fixture-secret-invalid, !!str tls: false}\n", 1) + e
+		}},
+		{"escaped_duplicate", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "}\n", `, tls: fixture-secret-invalid, "t\u006cs": false}`+"\n", 1) + e
+		}},
+		{"duplicate_root", func(e string) string { return "proxies: [null]\n!!str proxies:\n" + e }},
+		{"tagged_non_string_root", func(e string) string { return "!!int 12: fixture-secret\nproxies:\n" + e }},
+		{"custom_root_key_tag", func(e string) string { return "!fixture-secret proxies:\n" + e }},
+		{"custom_node_key_tag", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "type: http", "!fixture-secret type: http", 1) + e
+		}},
+		{"custom_value_tag", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "type: http", "type: !fixture-secret http", 1) + e
+		}},
+		{"custom_container_tag", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "- {", "- !fixture-secret {", 1) + e
+		}},
+		{"merge_node", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "}\n", ", <<: {tls: false}}\n", 1) + e
+		}},
+		{"merge_root", func(e string) string { return "<<: {proxies: [null]}\nproxies:\n" + e }},
+		{"quoted_merge", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "}\n", `, "<<": {tls: false}}`+"\n", 1) + e
+		}},
+		{"nested_alias_key", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "}\n", ", metadata: {&k tls: fixture-secret, *k: false}}\n", 1) + e
+		}},
+		{"nested_duplicate", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "}\n", ", metadata: {tls: fixture-secret, !!str tls: false}}\n", 1) + e
+		}},
+		{"nested_non_string", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "}\n", ", metadata: {true: fixture-secret}}\n", 1) + e
+		}},
+		{"sequence_key", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "}\n", ", ? [fixture-secret] : false}\n", 1) + e
+		}},
+		{"mapping_key", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "}\n", ", ? {fixture-secret: value} : false}\n", 1) + e
+		}},
+		{"merge_alias", func(e string) string {
+			return "proxies:\n" + strings.Replace(e, "- {", "- &node {", 1) + "- {<<: *node}\n" + e
+		}},
+		{"nested_sequence_duplicate", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "}\n", ", metadata: [{tls: fixture-secret, !!str tls: false}]}\n", 1) + e
+		}},
+		{"binary_tag", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "}\n", ", metadata: !!binary Zml4dHVyZS1zZWNyZXQ=}\n", 1) + e
+		}},
+		{"timestamp_tag", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "}\n", ", metadata: !!timestamp 2001-01-01}\n", 1) + e
+		}},
+		{"value_alias", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "name: fixture-secret-name, type: http", "name: &v http, type: *v", 1) + e
+		}},
+		{"cyclic_alias", func(e string) string {
+			return "proxies:\n" + e + strings.Replace(e, "}\n", ", metadata: &cycle {self: *cycle}}\n", 1) + e
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, endpointHits := directTLS(t, `{"ip":"192.0.2.84"}`, 200)
+			u, _ := url.Parse(srv.URL)
+			accepted := new(atomic.Int32)
+			p, connects := directHTTPProxy(t, srv.Listener.Addr().String(), u.Host, true, accepted)
+			entry := strings.TrimPrefix(directYAML(p), "proxies:\n")
+			rep, err := nodeService().measureDirectNodes(context.Background(), tc.build(entry), directOptions(srv))
+			if err != errDirectNodeConfiguration {
+				t.Errorf("ambiguous YAML not rejected with controlled error: err=%v verdict=%s", err, rep.Verdict)
+			}
+			blob, _ := json.Marshal(rep)
+			if strings.Contains(string(blob), "fixture-") || (err != nil && strings.Contains(err.Error(), "fixture-")) {
+				t.Error("configuration leaked into report/error")
+			}
+			if accepted.Load() != 0 || connects.Load() != 0 || endpointHits.Load() != 0 {
+				t.Errorf("rejected batch sent TCP=%d CONNECT=%d endpoint=%d", accepted.Load(), connects.Load(), endpointHits.Load())
+			}
+		})
+	}
+}
+
+func TestDirectNodesYAMLUnambiguousStringsKeepPositions(t *testing.T) {
+	srv, endpointHits := directTLS(t, `{"ip":"192.0.2.85"}`, 200)
+	u, _ := url.Parse(srv.URL)
+	p, connects := directHTTPProxy(t, srv.Listener.Addr().String(), u.Host, true)
+	entry := strings.TrimPrefix(directYAML(p), "proxies:\n")
+	// Unreferenced anchors and standard explicit string tags do not change key
+	// identity. Quoting/escapes resolve to the same supported key before decoding.
+	tagged := strings.Replace(entry, "name: fixture-secret-name", `&unused !!str name: !!str fixture-secret-name`, 1)
+	tagged = strings.Replace(tagged, "type: http", `"t\u0079pe": http`, 1)
+	text := "!!str proxies:\n" + strings.Replace(entry, "type: http", "type: vmess", 1) + tagged + entry
+	rep, err := nodeService().measureDirectNodes(context.Background(), text, directOptions(srv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := directResults(t, rep)
+	if len(out) != 3 || out[0].Index != 1 || out[0].Status != "unsupported" || out[1].Index != 2 || out[1].Status != "measured" || out[2].Index != 3 || out[2].Status != "measured" || rep.Verdict != "ok_with_caveats" {
+		t.Fatalf("unambiguous input lost original positions: %+v", rep)
+	}
+	if connects.Load() != 2 || endpointHits.Load() != 2 {
+		t.Fatalf("supported nodes not measured: %d/%d", connects.Load(), endpointHits.Load())
 	}
 }
