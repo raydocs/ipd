@@ -101,12 +101,12 @@ func (e skipErr) Error() string { return string(e) }
 func errSkip(s string) error { return skipErr(s) }
 
 func readSnapshotFile(dir string) (string, error) {
-	rows, _, err := readSnapshot(dir+"/feeds/cloud_ranges.tsv", dir+"/feeds/cloud_ranges.meta.json")
+	snap, err := readFeedSnapshot(dir+"/feeds/cloud_ranges"+feedSnapshotSuffix, "cloud_ranges")
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
-	for _, r := range rows {
+	for _, r := range snap.Rows {
 		b.WriteString(r.Rec.Prefix)
 		b.WriteByte('\n')
 	}

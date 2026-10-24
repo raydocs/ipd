@@ -102,6 +102,23 @@ func Load(eng *lookup.Engine, cfg *config.Config) error {
 		}
 		seenSnap[id] = true
 	}
+	// IPDS remains authoritative when formats coexist, including a later
+	// streamRows refresh. Ordinary apply writers never overwrite an IPDS source.
+	for _, ent := range entries {
+		if ent.IsDir() || !strings.HasSuffix(ent.Name(), feedSnapshotSuffix) {
+			continue
+		}
+		id := strings.TrimSuffix(ent.Name(), feedSnapshotSuffix)
+		if seenSnap[id] {
+			continue
+		}
+		snap, err := readFeedSnapshot(filepath.Join(dir, ent.Name()), id)
+		if err != nil {
+			return err
+		}
+		eng.MergeSource(snap.Meta, snap.Rows)
+		seenSnap[id] = true
+	}
 	for _, ent := range entries {
 		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".tsv") {
 			continue
@@ -142,6 +159,7 @@ type updater struct {
 	logf   func(string)
 	client *http.Client
 	get    func(ctx context.Context, url string, max int64) ([]byte, error)
+	files  *snapshotFiles // nil uses the real filesystem
 }
 
 func (u *updater) fetch(ctx context.Context, urls []string, max int64) ([]byte, string, error) {
@@ -248,23 +266,35 @@ func truncate(b []byte) string {
 
 func (u *updater) apply(id string, m lookup.SourceMeta, rows []lookup.SourceRow, srcURL, note string, err error) FeedResult {
 	fr := FeedResult{ID: id, URL: srcURL, Note: note}
+	fail := func(err error) FeedResult {
+		fr.Err = err.Error()
+		u.logf(id + " 失败: " + fr.Err + "，保留原快照")
+		return fr
+	}
 	if err != nil {
-		fr.Err = err.Error()
-		u.logf(id + " 失败: " + fr.Err)
-		return fr
+		return fail(err)
 	}
+	snap, err := prepareFeedSnapshot(id, m, rows)
+	if err != nil {
+		return fail(err)
+	}
+	dir := filepath.Join(u.cfg.DataDir, "feeds")
+	// MergeSource cannot replace a mapped table. Current successful apply and
+	// streamRows writers have disjoint source IDs; fail closed on a collision.
+	if _, err := os.Lstat(filepath.Join(dir, id+".ipds")); err == nil {
+		return fail(fmt.Errorf("source %s has an IPDS snapshot", id))
+	} else if !os.IsNotExist(err) {
+		return fail(err)
+	}
+	if err := writeFeedSnapshot(dir, snap, u.files); err != nil {
+		return fail(err)
+	}
+	// All fallible file operations precede publication. Prepared rows are
+	// nonempty and valid, so MergeSource has no remaining error return.
 	if u.eng != nil {
-		fr.Rows = u.eng.MergeSource(m, rows)
+		fr.Rows = u.eng.MergeSource(snap.Meta, snap.Rows)
 	} else {
-		fr.Rows = len(rows)
-	}
-	if fr.Rows == 0 {
-		fr.Err = "no rows parsed"
-		u.logf(id + " 没有解析出前缀，保留原快照")
-		return fr
-	}
-	if err := u.writeSnapshot(m, rows); err != nil {
-		fr.Err = err.Error()
+		fr.Rows = len(snap.Rows)
 	}
 	u.logf(fmt.Sprintf("%s 已更新 %d 条", id, fr.Rows))
 	return fr
@@ -312,32 +342,6 @@ func (u *updater) streamRows(m lookup.SourceMeta, srcURL, note string, fill func
 	}
 	u.logf(fmt.Sprintf("%s 已更新 %d 条", m.ID, fr.Rows))
 	return fr
-}
-
-func (u *updater) writeSnapshot(m lookup.SourceMeta, rows []lookup.SourceRow) error {
-	dir := filepath.Join(u.cfg.DataDir, "feeds")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	path := filepath.Join(dir, m.ID+".tsv")
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := bufio.NewWriterSize(f, 1<<20)
-	for _, row := range rows {
-		rec := row.Rec
-		org := strings.ReplaceAll(rec.Org, "\t", " ")
-		fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			rec.Prefix, rec.ASN, rec.CC, org, rec.ASType, strings.Join(rec.Flags, "|"), rec.Cloud, rec.RegisteredCC)
-	}
-	if err := w.Flush(); err != nil {
-		return err
-	}
-	metaPath := filepath.Join(dir, m.ID+".meta.json")
-	b, _ := json.Marshal(m)
-	return os.WriteFile(metaPath, b, 0o644)
 }
 
 func readSnapshot(tsv, metaPath string) ([]lookup.SourceRow, lookup.SourceMeta, error) {
