@@ -64,3 +64,11 @@
 默认 Nodes/MCP/HTTP 不启动核心，离线不发包；即使出口观测完整也保持 abstain，不冒充安全结论。
 总控组合 Go/Node/app/CLI/nodes race 通过，但首轮独立审查 block：JSON 标签经 YAML 解码导致节点身份错配、出口地址过滤不足两项 P2 已追加修正 `676aabf`，第二轮独立审查 approve，两项 P2 关闭；修正版组合 Go/Node/app/CLI/nodes race 通过，验收 `676aabf`，保持 Draft、未合并；真实 core、纯净度/解锁及跨格式转换仍未完成。
 误含父汇总历史的初始 #24 已关闭，由 #25 替代，不计作成果或验收对象。
+
+### 逐节点解锁候选：测试阻断
+
+[Draft #26](https://github.com/raydocs/ipd/pull/26) `ba4dafc` 依赖 #23/#25，base main。
+显式 `--unlock`、同节点 Getter、请求预算及受控输出已实现，但最终窄 race 与 Go 全套
+均在两个 backend 的 `lose-owner` 回归失败：子进程活着却关闭 listener 后仍可能发布旧 positive。
+未验收，也未将删测试或放宽检查作为解决办法。正在只读裁决 runner 持续归属验证的最小 API，
+再独立修复并复测；网页、purity、转换及真实核心仍未完成。
