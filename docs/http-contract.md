@@ -3,8 +3,8 @@
 `GET /openapi.json` describes the existing `Server.Handler` surface. It does not
 add routes, validate incoming requests, or change execution. The contract tests
 extract route registrations from `http.go`, check path parameters and concrete
-request/response declarations, and exercise an offline Handler with in-memory
-storage and a fake measurement provider. Fixtures use documentation addresses,
+request/response declarations, and exercise a network-independent Handler with
+in-memory storage and a fake measurement provider. Fixtures use documentation addresses,
 `example.invalid`, or loopback; they do not contact measurement providers.
 
 ## Negotiation and errors
@@ -24,7 +24,7 @@ event containing the Report and then `done` with `{}`. This is neither a progres
 subscription nor watch delivery. Root/share HTML branches take precedence over
 streaming. Batch's NDJSON branch takes precedence over both format and stream.
 
-Handler errors use `http.Error`: plain text, generally newline-terminated, even
+REST handler errors use `http.Error`: plain text, generally newline-terminated, even
 when the client requested JSON. They are not Report envelopes. Important statuses
 are 400 for invalid IP/prefix, oversized batch count, measurement/provider errors
 or watch store failures; 401 for configured PoW failures; 403 for share/label
@@ -49,6 +49,8 @@ properties are intentionally permitted for compatibility with report additions.
 `Source` describes source IDs and optional attribution/license/raw JSON.
 `data` is not globally restricted to one fixed object shape. Nil source or
 attribution slices can serialize as JSON null, not just empty arrays.
+`LookupReport.data.disagreements` can also be null for a non-reserved address
+with no local observations; it is not universally normalized to an empty array.
 
 `cached_at` is the Report's cache/result timestamp; it is not universally the
 current request time. `snapshot_at` is the prefix-data clock (older of the DB-IP
@@ -92,12 +94,27 @@ Reports are marshaled before HTTP snapshot enrichment; the outer retrieval clock
 does not retroactively change them. Without a store the submission uses the
 placeholder `job` and subsequent retrieval returns 404.
 
-Only GFW explicitly requires a nonempty `target` at the HTTP layer; empty bodies
-on route/latency reach the provider with default values. Provider errors can
-still produce 400. PoW applies only when configured; GFW checks missing target
-before checking PoW. The JSON body schemas describe the intended typed fields,
-not strict rejection of every malformed body: several decoders ignore errors,
-unknown fields or wrong types, and do not enforce Content-Type.
+At baseline `19a0b16`, only GFW explicitly checks a nonempty `target` in the HTTP
+handler; route/latency decoders can pass default fields to their services. That
+permissive decoding is **not a promise that an empty request succeeds**. In the
+combined PR9 latency service (`67e87d4` and its preceding commits), an empty or
+whitespace-only target explicitly returns 400, including in offline mode. Always
+send a nonempty target for measurement requests; the contract tests use
+`example.invalid` with an injected provider, not a live network dependency.
+Provider/service errors may also produce 400. PoW applies only when configured;
+GFW checks missing target before checking PoW. The body declarations preserve
+baseline decoder permissiveness, not a guarantee of service acceptance. Several
+decoders ignore errors, unknown fields or wrong types, and do not enforce
+Content-Type.
+
+Latency rows accept numeric **or null** `rtt_ms` and `loss`. The baseline emitted
+numbers; PR9 preserves missing/failed evidence as null instead of a fabricated
+zero. Unknown RTT is not 0 ms and unknown loss is not 0%. Failed/unknown samples
+can still retain independently observed nonzero packet loss. Additional PR9
+status, reason and collection metadata remain permitted; they do not turn an
+unknown measurement into a successful observation. Contract fixtures cover both
+null and numeric rows, and combined wire tests enable only the injected fake
+provider so unknown rows are actually exercised.
 
 ## Opt-in writes and egress boundaries
 
@@ -128,7 +145,12 @@ caller's environment.
 `/mcp` and its existing subtree delegate to the stateless MCP SDK, not the Report
 REST protocol. Its POST requires JSON Content-Type and Accept containing both
 JSON and event-stream; notification acknowledgments and SDK errors have their
-own statuses. Full tool/protocol semantics remain SDK-owned. The optional
+own statuses. In particular, explicit HTTP 400 can carry either plain text
+(header validation) or an `application/json` JSON-RPC error with `jsonrpc`, `id`,
+and structured `error.code`/`error.message`. A 2026-07-28 ping call missing
+request-level protocol metadata exercises the latter; the explicit 400 response
+declares both media types rather than relying on `default`. Full tool/protocol
+semantics remain SDK-owned. The optional
 `/agent` subtree is an injected handler (normally probe enrollment/WebSocket),
 absent when no Hub is configured; its opaque transport is not a new REST API.
 

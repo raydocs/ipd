@@ -167,7 +167,8 @@ func TestOpenAPISpecificContracts(t *testing.T) {
 	batch := object(t, object(t, operation(t, doc, "/v1/batch", "post")["requestBody"])["content"])
 	object(t, batch["application/json"])
 	object(t, batch["text/plain"])
-	// No invented validation: these decoders accept missing fields / empty bodies.
+	// The baseline HTTP decoders do not require these bodies. This does not
+	// promise service/provider success for missing measurement targets.
 	for _, path := range []string{"/v1/route", "/v1/latency", "/v1/watch", "/v1/label", "/v1/leak/webrtc", "/v1/batch"} {
 		if object(t, operation(t, doc, path, "post")["requestBody"])["required"] != false {
 			t.Errorf("%s invents mandatory body", path)
@@ -343,6 +344,8 @@ func TestOpenAPIBatchLinesAndNDJSON(t *testing.T) {
 func TestOpenAPIJobAndOptInWireShapes(t *testing.T) {
 	doc := contractDoc(t)
 	svc, h := contractHandler(t, true)
+	// Enable the injected provider, never a live provider, so latency rows are exercised.
+	svc.Cfg.Offline = false
 	for _, path := range []string{"/v1/gfw", "/v1/route", "/v1/latency"} {
 		w := contractRequest(h, "POST", path, `{"target":"example.invalid"}`, "application/json")
 		if w.Code != 200 {
@@ -370,14 +373,14 @@ func TestOpenAPIJobAndOptInWireShapes(t *testing.T) {
 			t.Fatal("stored snapshot unexpectedly enriched")
 		}
 	}
-	// Empty bodies are accepted for these routes; don't invent required fields.
-	for _, path := range []string{"/v1/route", "/v1/latency", "/v1/watch"} {
-		w := contractRequest(h, "POST", path, "", "application/json")
-		if w.Code != 200 {
-			t.Fatalf("%s: %d", path, w.Code)
-		}
-		validateContractResponse(t, doc, path, "post", w)
+	// Watch's decoder is independently permissive; measurement requests above
+	// always name a target and do not assume provider/service validation stays permissive.
+	emptyWatch := contractRequest(h, "POST", "/v1/watch", "", "application/json")
+	if emptyWatch.Code != 200 {
+		t.Fatalf("watch status %d", emptyWatch.Code)
 	}
+	validateContractResponse(t, doc, "/v1/watch", "post", emptyWatch)
+
 	w := contractRequest(h, "POST", "/v1/watch", `{"target":"192.0.2.1","checks":["risk","history"],"webhook":"https://example.invalid/documentationfixture"}`, "application/json")
 	validateContractResponse(t, doc, "/v1/watch", "post", w)
 	created := object(t, decodeContractJSON(t, w)["data"])
@@ -465,7 +468,11 @@ func TestOpenAPINegotiationAndFailureEdges(t *testing.T) {
 		})
 	}
 	// No DB: generated job id is a placeholder, not an async handle.
-	w := contractRequest(h, "POST", "/v1/latency", "", "application/json")
+	w := contractRequest(h, "POST", "/v1/latency", `{"target":"example.invalid"}`, "application/json")
+	if w.Code != 200 {
+		t.Fatalf("latency status %d: %s", w.Code, w.Body.String())
+	}
+	validateContractResponse(t, doc, "/v1/latency", "post", w)
 	if object(t, decodeContractJSON(t, w)["data"])["job_id"] != "job" {
 		t.Fatal("no-store job placeholder")
 	}
@@ -744,5 +751,101 @@ func TestOpenAPIOperationStructure(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestOpenAPILatencyNullableEvidence(t *testing.T) {
+	doc := contractDoc(t)
+	response := object(t, object(t, operation(t, doc, "/v1/latency", "post")["responses"])["200"])
+	schema := contractSchema(t, doc, object(t, object(t, response["content"])["application/json"])["schema"])
+	for _, tc := range []struct {
+		name      string
+		rtt, loss any
+		valid     bool
+	}{
+		{"unknown", nil, nil, true}, {"failed", nil, 1.0, true},
+		{"missing loss", 12.5, nil, true}, {"valid zero loss", 12.5, 0.0, true},
+		{"text RTT", "unknown", nil, false}, {"boolean loss", nil, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := map[string]any{"probe": "documentationfixture", "cc": "", "city": "documentationfixture", "asn": 64496, "rtt_ms": tc.rtt, "loss": tc.loss}
+			rep := app.Report{Verdict: "abstain", Summary: "documentationfixture", Sources: []app.Source{}, Data: map[string]any{"job_id": "documentationfixture", "status": "done", "result": map[string]any{"rows": []any{row}, "svg": "<svg></svg>"}}}
+			raw, err := json.Marshal(rep)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var value any
+			if err := json.Unmarshal(raw, &value); err != nil {
+				t.Fatal(err)
+			}
+			if err := schema.Validate(value); (err == nil) != tc.valid {
+				t.Fatalf("latency evidence validity: want %v, got %v", tc.valid, err)
+			}
+		})
+	}
+}
+
+func TestOpenAPINonReservedUnobservedLookup(t *testing.T) {
+	doc := contractDoc(t)
+	svc, h := contractHandler(t, false)
+	svc.Look = &lookup.Engine{}
+	// RFC 9637 documentation space (https://www.rfc-editor.org/rfc/rfc9637.html).
+	// Unlike 2001:db8::/32, the current classifier does not mark this fixture
+	// reserved. An empty engine exercises the non-reserved, no-observation path;
+	// LookupIP is passive and never sends traffic to this documentation address.
+	w := contractRequest(h, "GET", "/v1/ip/3fff::1", "", "application/json")
+	if w.Code != 200 {
+		t.Fatalf("lookup status %d", w.Code)
+	}
+	rep := decodeContractJSON(t, w)
+	if rep["verdict"] != "abstain" {
+		t.Fatalf("fixture must exercise non-reserved missing observations, got %v", rep["verdict"])
+	}
+	data := object(t, rep["data"])
+	if object(t, data["asn"])["asn"] != float64(0) {
+		t.Fatal("fixture unexpectedly has an ASN observation")
+	}
+	disagreements, present := data["disagreements"]
+	if !present || disagreements != nil {
+		t.Fatal("unobserved lookup must include the actual null disagreements value")
+	}
+	validateContractResponse(t, doc, "/v1/ip/{ip}", "get", w)
+}
+
+func TestOpenAPIMCPBadRequestMedia(t *testing.T) {
+	doc := contractDoc(t)
+	_, h := contractHandler(t, false)
+	for _, tc := range []struct{ path, template, accept, media string }{
+		{"/mcp", "/mcp", "application/json, text/event-stream", "application/json"},
+		{"/mcp/", "/mcp/", "application/json, text/event-stream", "application/json"},
+		{"/mcp/documentationfixture", "/mcp/{path}", "application/json, text/event-stream", "application/json"},
+		{"/mcp", "/mcp", "application/json", "text/plain"},
+	} {
+		t.Run(tc.path+tc.media, func(t *testing.T) {
+			r := httptest.NewRequest("POST", tc.path, strings.NewReader(`{"jsonrpc":"2.0","id":"documentationfixture","method":"ping"}`))
+			r.RemoteAddr = "127.0.0.1:12345"
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("Accept", tc.accept)
+			// Missing request-level protocol metadata is an SDK protocol error, not
+			// the plain-text HTTP header error produced by the final Accept fixture.
+			r.Header.Set("MCP-Protocol-Version", "2026-07-28")
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != 400 || strings.Split(w.Header().Get("Content-Type"), ";")[0] != tc.media {
+				t.Fatalf("MCP status/media: %d %s", w.Code, w.Header().Get("Content-Type"))
+			}
+			if tc.media == "application/json" {
+				rep := decodeContractJSON(t, w)
+				if rep["jsonrpc"] != "2.0" || rep["id"] != "documentationfixture" || rep["verdict"] != nil {
+					t.Fatal("expected JSON-RPC error, not an ipd Report")
+				}
+				rpcError := object(t, rep["error"])
+				if _, ok := rpcError["code"].(float64); !ok || rpcError["message"] == "" || rpcError["message"] == nil {
+					t.Fatal("missing structured protocol error")
+				}
+			}
+			// Select the explicit 400 response: a default response cannot supply its media.
+			validateContractResponse(t, doc, tc.template, "post", w)
+		})
 	}
 }

@@ -12,7 +12,7 @@ func OpenAPI() []byte {
 		"openapi": "3.1.0",
 		"info": map[string]any{
 			"title": "ipd", "version": "0.9.0", "summary": "Agent-first IP intelligence and network-quality checks.",
-			"description": "Passive lookups accept IP addresses. Egress-side AI, unlock, leak and return-route checks must run on the egress via CLI or MCP stdio; HTTP does not execute those tools on a remote caller's machine. Report responses are negotiated, NOT always JSON under /v1. Errors from HTTP handlers are plain text. Optional share and label submission require explicit configuration; watch creation is an opt-in write, not a feature-flagged endpoint. MCP and optional agent subtrees are delegated transports, not Report APIs. See docs/http-contract.md for limits of structural validation.",
+			"description": "Passive lookups accept IP addresses. Egress-side AI, unlock, leak and return-route checks must run on the egress via CLI or MCP stdio; HTTP does not execute those tools on a remote caller's machine. Report responses are negotiated, NOT always JSON under /v1. REST handler errors are plain text; delegated MCP protocol errors may be JSON-RPC JSON. Optional share and label submission require explicit configuration; watch creation is an opt-in write, not a feature-flagged endpoint. MCP and optional agent subtrees are delegated transports, not Report APIs. See docs/http-contract.md for limits of structural validation.",
 		},
 		"paths":      paths(),
 		"components": map[string]any{"schemas": reportSchemas()},
@@ -72,6 +72,7 @@ func reportSchemas() oa {
 		"RiskReport":          reportWithData(objectSchema(oa{"native": objectSchema(oa{"verdict": oa{"type": "string", "enum": []string{"native", "broadcast", "abstain"}, "description": "Three-state classification, not a boolean. Missing evidence is abstain."}})})),
 		"PowChallenge":        objectSchema(oa{"challenge": oa{"type": "string"}, "bits": oa{"type": "integer"}}, "challenge", "bits"),
 		"Error":               stringSchema("Plain-text http.Error body, generally ending in a newline; not a JSON error envelope."),
+		"JSONRPCError":        objectSchema(oa{"jsonrpc": oa{"const": "2.0"}, "id": oa{}, "error": objectSchema(oa{"code": oa{"type": "integer"}, "message": oa{"type": "string"}, "data": oa{}}, "code", "message")}, "jsonrpc", "id", "error"),
 		"JSONRPC":             objectSchema(oa{"jsonrpc": oa{"const": "2.0"}, "id": oa{}, "method": oa{"type": "string"}, "params": oa{}, "result": oa{}, "error": oa{}}, "jsonrpc"),
 	}
 
@@ -96,7 +97,7 @@ func payloadSchemas() oa {
 	timestamp := oa{"type": "string", "format": "date-time"}
 	asn := objectSchema(oa{"asn": integer, "org": str, "type": str}, "asn", "org", "type")
 	geo := objectSchema(oa{"cc": str, "city": str, "region": str, "lat": number, "lon": number, "sources": arraySchema(oa{"type": "object"})}, "cc", "sources")
-	lookup := objectSchema(oa{"ip": str, "geo": geo, "asn": asn, "rdns": str, "registered_cc": str, "announced_by": arraySchema(integer), "disagreements": arraySchema(oa{"type": "object"}), "conflicts": arraySchema(oa{"type": "object"}), "anycast": oa{"type": "boolean"}}, "ip", "geo", "asn", "rdns", "registered_cc", "announced_by", "disagreements")
+	lookup := objectSchema(oa{"ip": str, "geo": geo, "asn": asn, "rdns": str, "registered_cc": str, "announced_by": arraySchema(integer), "disagreements": nullableArray(oa{"type": "object"}), "conflicts": arraySchema(oa{"type": "object"}), "anycast": oa{"type": "boolean"}}, "ip", "geo", "asn", "rdns", "registered_cc", "announced_by", "disagreements")
 	source := objectSchema(oa{"id": str, "version": str, "updated_at": stringSchema("RFC3339 or empty when unknown; not unconditionally date-time."), "license": str, "attribution": str, "enabled": oa{"type": "boolean"}, "kind": str, "rows": integer, "stale": oa{"type": "boolean"}}, "id", "version", "updated_at", "license", "attribution", "enabled", "kind", "rows", "stale")
 	target := objectSchema(oa{"province": str, "carrier": str, "ip": str, "name": str, "core": oa{"type": "boolean"}}, "province", "carrier", "ip", "name", "core")
 	hop := objectSchema(oa{"ip": str, "asn": integer, "rtt_ms": number, "rdns": str, "geo_cc": str}, "ip", "asn", "rtt_ms")
@@ -117,7 +118,7 @@ func payloadSchemas() oa {
 		"FingerprintReport":       reportWithData(objectSchema(oa{"ip": str, "ja3": str, "ja3_raw": str, "ja4": str, "mss": integer, "ttl": integer, "h2": str, "at": timestamp}, "ip")),
 		"GFWSubmissionReport":     submission(objectSchema(oa{"verdict": str, "per_carrier": oa{"type": "object", "additionalProperties": str}, "probes": nullableArray(probe), "control": nullableArray(probe), "confidence": number, "notes": nullableArray(str)}, "verdict", "per_carrier", "probes", "control", "confidence", "notes")),
 		"RouteSubmissionReport":   submission(objectSchema(oa{"paths": arraySchema(path), "summary": str}, "paths", "summary")),
-		"LatencySubmissionReport": submission(objectSchema(oa{"rows": arraySchema(objectSchema(oa{"probe": str, "cc": str, "city": str, "asn": integer, "rtt_ms": number, "loss": number}, "probe", "cc", "city", "asn", "rtt_ms", "loss")), "svg": str}, "rows", "svg")),
+		"LatencySubmissionReport": submission(objectSchema(oa{"rows": arraySchema(objectSchema(oa{"probe": str, "cc": str, "city": str, "asn": integer, "rtt_ms": oa{"type": []string{"number", "null"}, "description": "RTT milliseconds, or null when no valid RTT evidence is available; null is not zero latency."}, "loss": oa{"type": []string{"number", "null"}, "description": "Observed packet-loss fraction, or null when unavailable. Failed/unknown samples may still have observed nonzero loss; null is not zero loss."}}, "probe", "cc", "city", "asn", "rtt_ms", "loss")), "svg": str}, "rows", "svg")),
 	}
 }
 
@@ -240,7 +241,7 @@ func paths() map[string]any {
 	for _, p := range []string{"/v1/gfw", "/v1/route", "/v1/latency"} {
 		resultSchema := map[string]string{"/v1/gfw": "GFWSubmissionReport", "/v1/route": "RouteSubmissionReport", "/v1/latency": "LatencySubmissionReport"}[p]
 		op := reportOp(p, "post", "Synchronous measurement with job wrapper", "Runs the measurement BEFORE returning HTTP 200 data:{job_id,status:done,result:<operation data>}. No HTTP 202, pending job or async wait contract. Without a DB job_id is job and cannot be retrieved. PoW required only when configured; GFW checks missing target before PoW. Provider errors are HTTP 400.", resultSchema, oa{"400": bad["400"], "401": errorResponse("X-Ipd-Pow missing/invalid when IPD_POW_REQUIRED is enabled.")}, parameter("X-Ipd-Pow", "header", "Optional unless configured; solution to /v1/pow challenge.", oa{"type": "string"}, false))
-		props := oa{"target": stringSchema("Measurement target passed to the provider. GFW requires a nonempty target; route/latency do not validate presence in HTTP.")}
+		props := oa{"target": stringSchema("Measurement target. Always supply a nonempty target. Baseline HTTP decoding validates presence only for GFW; the integrated latency service also rejects empty targets with 400. Permissive decoding does not promise successful execution.")}
 		required := []string{}
 		if p == "/v1/gfw" {
 			props["target"] = oa{"type": "string", "minLength": 1}
@@ -251,7 +252,7 @@ func paths() map[string]any {
 			props["carriers"] = arraySchema(oa{"type": "string"})
 			props["carriers"].(map[string]any)["description"] = "Provider carrier selectors, normally ct/cu/cm; not HTTP-enforced enums."
 		}
-		jsonBody(op, "JSON decoded without enforcing Content-Type. Malformed/empty input leaves zero/default fields; only GFW explicitly rejects empty target.", p == "/v1/gfw", objectSchema(props, required...), oa{"target": "example.invalid"})
+		jsonBody(op, "JSON decoded without enforcing Content-Type. Baseline decoders can leave zero/default fields on malformed or empty input, but this is not a success guarantee. GFW rejects empty target in HTTP; integrated latency service validation also rejects it. Supply a nonempty target.", p == "/v1/gfw", objectSchema(props, required...), oa{"target": "example.invalid"})
 	}
 	reportOp("/v1/jobs/{id}", "get", "Read stored job", "For HTTP-created completed jobs, data.result is the FULL stored Report, unlike the submission response which contains only operation data. Missing job/store is 404.", "JobReport", oa{"404": errorResponse("Job not found or no store.")})
 	reportOp("/v1/route/targets", "get", "Return-path targets", "Lists configured targets only; actual return-route tracing must run at the egress.", "TargetsReport", nil, parameter("scope", "query", "full selects all; absent defaults to core and any other value selects core (the supplied scope is still echoed).", oa{"type": "string", "default": "core"}, false))
@@ -271,7 +272,7 @@ func paths() map[string]any {
 	reportOp("/v1/fingerprint", "get", "Last observed fingerprint", "No active fingerprint collection request; absent observation returns abstain with HTTP 200.", "FingerprintReport", nil, parameter("ip", "query", "Address to look up; absent uses caller IP. Not validated by HTTP.", oa{"type": "string"}, false))
 	// Delegated transports are intentionally not advertised as Report endpoints.
 	for _, p := range []string{"/mcp", "/mcp/", "/mcp/{path}"} {
-		op := add(p, "post", "MCP Streamable HTTP transport", "Delegated to the MCP SDK (stateless, JSONResponse). Accept must contain both application/json and text/event-stream. Egress-only tools return requires_egress_run over HTTP; use stdio on the egress. Subtree is mounted too; not a new REST endpoint.", response("JSON-RPC response", oa{"application/json": media(schemaRef("JSONRPC")), "text/event-stream": media(oa{"type": "string"})}), oa{"202": oa{"description": "Notification accepted; no response body."}, "400": errorResponse("Invalid protocol/header/message."), "405": errorResponse("Non-POST method in stateless mode."), "413": errorResponse("SDK request size limit exceeded."), "415": errorResponse("Content-Type must be application/json."), "500": errorResponse("Transport connection failure."), "default": oa{"description": "SDK-managed protocol response; not an ipd Report."}}, parameter("MCP-Protocol-Version", "header", "SDK-supported negotiated protocol version.", oa{"type": "string"}, false))
+		op := add(p, "post", "MCP Streamable HTTP transport", "Delegated to the MCP SDK (stateless, JSONResponse). Accept must contain both application/json and text/event-stream. Egress-only tools return requires_egress_run over HTTP; use stdio on the egress. Subtree is mounted too; not a new REST endpoint.", response("JSON-RPC response", oa{"application/json": media(schemaRef("JSONRPC")), "text/event-stream": media(oa{"type": "string"})}), oa{"202": oa{"description": "Notification accepted; no response body."}, "400": response("Invalid protocol/header/message: HTTP validation errors may be plain text; SDK protocol errors may be JSON-RPC JSON.", oa{"text/plain": media(schemaRef("Error")), "application/json": media(schemaRef("JSONRPCError"))}), "405": errorResponse("Non-POST method in stateless mode."), "413": errorResponse("SDK request size limit exceeded."), "415": errorResponse("Content-Type must be application/json."), "500": errorResponse("Transport connection failure."), "default": oa{"description": "SDK-managed protocol response; not an ipd Report."}}, parameter("MCP-Protocol-Version", "header", "SDK-supported negotiated protocol version.", oa{"type": "string"}, false))
 		jsonBody(op, "JSON-RPC request or notification; full MCP method schemas are owned by the SDK/tools, not REST Report schemas.", true, schemaRef("JSONRPC"), oa{"jsonrpc": "2.0", "id": 1, "method": "ping"})
 	}
 	for _, p := range []string{"/agent", "/agent/", "/agent/{path}"} {
