@@ -271,32 +271,31 @@ func latencyCmd(ctx context.Context, svc *app.Service, args []string) (app.Repor
 		if err != nil {
 			return app.Report{}, fmt.Errorf("保存 SVG: %w", err)
 		}
-		saved := false
-		defer func() {
-			_ = f.Close()
-			if !saved {
-				_ = os.Remove(path)
-			}
-		}()
+		// The pathname can be replaced while Measure runs. Only close our fd:
+		// even checking SameFile before Remove would leave an unlink TOCTOU.
+		// Keeping our own empty/partial export is safer than deleting a new owner.
+		defer f.Close()
+		incomplete := func(err error) (app.Report, error) {
+			return app.Report{}, fmt.Errorf("保存 SVG: %w; empty/partial export may remain (no path cleanup attempted)", err)
+		}
 		rep, err := svc.Latency(ctx, target)
 		if err != nil {
-			return app.Report{}, err
+			return incomplete(err)
 		}
 		data, ok := rep.Data.(map[string]any)
 		if !ok {
-			return app.Report{}, fmt.Errorf("latency 响应缺少 SVG")
+			return incomplete(fmt.Errorf("latency 响应缺少 SVG"))
 		}
 		svg, ok := data["svg"].(string)
 		if !ok || svg == "" {
-			return app.Report{}, fmt.Errorf("latency 响应缺少 SVG")
+			return incomplete(fmt.Errorf("latency 响应缺少 SVG"))
 		}
 		if _, err := io.WriteString(f, svg); err != nil {
-			return app.Report{}, fmt.Errorf("保存 SVG: %w", err)
+			return incomplete(err)
 		}
 		if err := f.Close(); err != nil {
-			return app.Report{}, fmt.Errorf("保存 SVG: %w", err)
+			return incomplete(err)
 		}
-		saved = true
 		return rep, nil
 	}
 	return svc.Latency(ctx, target)
