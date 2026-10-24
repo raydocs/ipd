@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -105,14 +104,11 @@ func New(cfg *config.Config, db *store.Store) *Service {
 	s.Vantage = reg.Active()
 	s.Tracer = func(ctx context.Context, target string) ([]route.Hop, error) {
 		raw, err := route.Trace(ctx, target, 12)
-		if err != nil {
-			return nil, err
-		}
 		ph := make([]probe.Hop, len(raw))
 		for i, h := range raw {
 			ph[i] = probe.Hop{IP: h.IP, RTTMS: h.RTTMS, ASN: h.ASN}
 		}
-		return s.annotate(ph), nil
+		return s.annotate(ph), err
 	}
 	if cfg.EgressIPv4 != "" || cfg.EgressIPv6 != "" {
 		s.Egress = func(ctx context.Context) (string, string) { return cfg.EgressIPv4, cfg.EgressIPv6 }
@@ -647,41 +643,61 @@ func hostOnly(t string) string {
 	return t
 }
 
-// RouteForward asks the China vantage for a path and classifies it.
+// RouteForward measures China vantage -> target, never the reverse direction.
 func (s *Service) RouteForward(ctx context.Context, target string, carriers []string) (Report, error) {
 	if s.Vantage == nil || !s.Vantage.Enabled() {
-		return Report{}, fmt.Errorf("vantage disabled")
+		return s.routeReport(nil, "", "forward", "vantage disabled", []Source{}), nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	samples, err := s.Vantage.Measure(ctx, probe.Query{Kind: probe.KindTrace, Target: target, Carriers: carriers, Limit: 1, MaxHops: 20})
-	if err != nil {
-		return Report{}, err
+	if err == nil {
+		err = ctx.Err()
 	}
-	var paths []route.Path
+	paths := []route.Path{}
+	seen := map[string]bool{}
 	for _, sm := range samples {
 		if sm.Network == "control" {
 			continue
 		}
+		seen[sm.Network] = true
 		hops := s.annotate(sm.Hops)
-		class := route.Classify(hops)
-		paths = append(paths, route.Path{Carrier: sm.Network, Probe: sm.City, Hops: hops, RouteClass: class})
+		pathErr := sm.Error
+		if pathErr == "" && (!sm.Healthy || (sm.ICMP != "" && sm.ICMP != "ok")) {
+			pathErr = "probe unhealthy or trace incomplete"
+		}
+		if pathErr == "" && (sm.DestinationReached == nil || !*sm.DestinationReached) {
+			pathErr = "destination not reached or completion unknown"
+		}
+		paths = append(paths, route.Path{Carrier: sm.Network, Probe: sm.City, Hops: hops, RouteClass: route.Classify(hops), Error: pathErr, DestinationReached: sm.DestinationReached})
 	}
-	if paths == nil {
-		paths = []route.Path{}
+	requested := carriers
+	if len(requested) == 0 {
+		requested = []string{"ct", "cu", "cm"}
 	}
-	sum, _ := route.Summarize(paths, "")
-	return Report{Verdict: "ok", Summary: sum, Data: route.Result{Paths: paths, Summary: sum}, Sources: []Source{{ID: s.Vantage.Name()}}, CachedAt: s.now()}, nil
+	for _, carrier := range requested {
+		if !seen[carrier] {
+			paths = append(paths, route.Path{Carrier: carrier, RouteClass: "unknown", Error: "no measurement for requested carrier"})
+		}
+	}
+	measurementErr := ""
+	if err != nil {
+		measurementErr = err.Error()
+	}
+	return s.routeReport(paths, "", "forward", measurementErr, []Source{{ID: s.Vantage.Name(), Raw: samples}}), nil
 }
 
 func (s *Service) annotate(hops []probe.Hop) []route.Hop {
 	out := make([]route.Hop, 0, len(hops))
 	for _, h := range hops {
 		rh := route.Hop{IP: h.IP, RTTMS: h.RTTMS, ASN: h.ASN}
-		if ip, err := netip.ParseAddr(h.IP); err == nil {
+		if ip, err := netip.ParseAddr(h.IP); err == nil && s.Look != nil {
 			p := s.Look.Lookup(ip)
-			if p.ASN != 0 {
+			if rh.ASN == 0 {
 				rh.ASN = p.ASN
+			} else if p.ASN != 0 && rh.ASN != p.ASN {
+				// Keep the measured ASN and expose disagreement instead of replacing it.
+				rh.LookupASN = p.ASN
 			}
 			rh.GeoCC = p.CC
 			rh.RDNS = p.RDNS
@@ -691,64 +707,55 @@ func (s *Service) annotate(hops []probe.Hop) []route.Hop {
 	return out
 }
 
-// RouteReturn traces from this process toward China targets.
+// RouteReturn traces this process -> China targets; it cannot prove the forward path.
 func (s *Service) RouteReturn(ctx context.Context, scope, claimed string) (Report, error) {
-	targets := route.Targets(scope)
 	if s.Tracer == nil {
-		return Report{
-			Verdict: "abstain",
-			Summary: "traceroute needs CAP_NET_RAW or an injected tracer; classification is ready once hops are supplied",
-			Data:    route.Result{Paths: []route.Path{}, Summary: "no tracer", Claimed: claimed},
-			Sources: []Source{{ID: "local"}}, CachedAt: s.now(),
-		}, nil
+		return s.routeReport(nil, claimed, "return", "no tracer; traceroute needs raw socket permissions or tracepath/traceroute", []Source{{ID: "local"}}), nil
 	}
-	var paths []route.Path
-	fail := 0
-	var firstErr string
-	for _, t := range targets {
-		if ctx.Err() != nil {
-			paths = append(paths, route.Path{Carrier: t.Carrier, Province: t.Province, RouteClass: "unknown", Error: ctx.Err().Error()})
-			fail++
-			continue
-		}
-		hops, err := s.Tracer(ctx, t.IP)
-		if err != nil {
-			if firstErr == "" {
-				firstErr = err.Error()
+	paths := []route.Path{}
+	for _, t := range route.Targets(scope) {
+		var hops []route.Hop
+		err := ctx.Err()
+		if err == nil {
+			hops, err = s.Tracer(ctx, t.IP)
+			if err == nil {
+				err = ctx.Err()
 			}
-			fail++
-			paths = append(paths, route.Path{Carrier: t.Carrier, Province: t.Province, RouteClass: "unknown", Error: err.Error()})
-			continue
 		}
-		class := route.Classify(hops)
-		paths = append(paths, route.Path{Carrier: t.Carrier, Province: t.Province, Hops: hops, RouteClass: class})
+		p := route.Path{Carrier: t.Carrier, Province: t.Province, Hops: hops, RouteClass: route.Classify(hops)}
+		if err != nil {
+			p.Error = err.Error()
+		}
+		paths = append(paths, p)
 	}
-	if fail == len(targets) && firstErr != "" {
-		return Report{
-			Verdict: "abstain",
-			Summary: "回程 traceroute 没有拿到跳数：" + firstErr,
-			Data:    route.Result{Paths: paths, Summary: firstErr, Claimed: claimed},
-			Sources: []Source{{ID: "local"}}, CachedAt: s.now(),
-		}, nil
-	}
-	sum, mismatch := route.Summarize(paths, claimed)
-	v := "ok"
-	if mismatch {
-		v = "risky"
-	}
-	return Report{Verdict: v, Summary: sum, Data: route.Result{Paths: paths, Summary: sum, Claimed: claimed, ClaimMismatch: mismatch}, Sources: []Source{{ID: "local"}}, CachedAt: s.now()}, nil
+	return s.routeReport(paths, claimed, "return", "", []Source{{ID: "local"}}), nil
 }
 
-// ClassifyPath is used by tests and by agents that already have hops.
+// ClassifyPath classifies supplied observations without assuming their direction.
 func (s *Service) ClassifyPath(hops []route.Hop, claimed string) Report {
-	class := route.Classify(hops)
-	p := route.Path{Hops: hops, RouteClass: class}
-	sum, mismatch := route.Summarize([]route.Path{p}, claimed)
-	v := "ok"
-	if mismatch {
-		v = "risky"
+	p := route.Path{Hops: hops, RouteClass: route.Classify(hops)}
+	return s.routeReport([]route.Path{p}, claimed, "unspecified", "", []Source{{ID: "local"}})
+}
+
+func (s *Service) routeReport(paths []route.Path, claimed, direction, measurementErr string, sources []Source) Report {
+	if paths == nil {
+		paths = []route.Path{}
 	}
-	return Report{Verdict: v, Summary: sum, Data: route.Result{Paths: []route.Path{p}, Summary: sum, Claimed: claimed, ClaimMismatch: mismatch}, Sources: []Source{{ID: "local"}}, CachedAt: s.now()}
+	// A top-level measurement error invalidates aggregate claim verification,
+	// without erasing the successful paths or the provider's partial samples.
+	sum, mismatch, verdict := route.Assess(paths, claimed)
+	if measurementErr != "" {
+		if verdict != "abstain" {
+			verdict = "ok_with_caveats"
+		}
+		mismatch = false
+		sum, _, _ = route.Assess(paths, "")
+		sum += "; measurement error: " + measurementErr
+		if route.NormalizeClaim(claimed) != "" {
+			sum += "; claim " + route.NormalizeClaim(claimed) + " unverified"
+		}
+	}
+	return Report{Verdict: verdict, Summary: sum, Data: route.Result{Paths: paths, Direction: direction, Error: measurementErr, Summary: sum, Claimed: claimed, ClaimMismatch: mismatch}, Sources: sources, CachedAt: s.now()}
 }
 
 // Unlock runs egress-side service checks.
@@ -757,221 +764,64 @@ func (s *Service) Unlock(ctx context.Context, ids []string) Report {
 		return Report{Verdict: "abstain", Summary: "unlock engine missing", Data: map[string]any{"results": []any{}}, Sources: []Source{}}
 	}
 	res := s.Checks.Check(ctx, ids)
-	bad := 0
+	unavailable, unknown, limited := 0, 0, 0
 	for _, r := range res {
-		if r.Status == unlock.No || r.Status == unlock.ErrStatus {
-			bad++
+		switch r.Status {
+		case unlock.Yes:
+		case unlock.No:
+			unavailable++
+		case unlock.Partial, unlock.OriginalsOnly, unlock.AppOnly, unlock.WebOnly, unlock.IDC:
+			limited++
+		default:
+			unknown++
 		}
 	}
 	v := "ok"
-	if bad > 0 && bad < len(res) {
+	switch {
+	case len(res) == 0 || unknown > 0:
+		v = "abstain"
+	case unavailable == len(res):
+		v = "blocked"
+	case unavailable > 0 || limited > 0:
 		v = "ok_with_caveats"
 	}
-	if len(res) > 0 && bad == len(res) {
-		v = "blocked"
-	}
-	return Report{Verdict: v, Summary: fmt.Sprintf("%d services, %d unavailable", len(res), bad), Data: map[string]any{"results": res}, Sources: []Source{{ID: "unlock"}}, CachedAt: s.now()}
+	return Report{Verdict: v, Summary: fmt.Sprintf("%d services, %d unavailable, %d limited, %d unknown", len(res), unavailable, limited, unknown), Data: map[string]any{"results": res}, Sources: []Source{{ID: "unlock"}}, CachedAt: s.now()}
 }
 
 // GoogleRegion is the egress-side 送中 check.
 func (s *Service) GoogleRegion(ctx context.Context) Report {
-	u := s.Checks
-	if u == nil {
-		return Report{Verdict: "abstain", Summary: "no unlock client", Data: map[string]any{"sent_to_china": false}, Sources: []Source{}}
+	data := map[string]any{"sent_to_china": nil, "google_tld": "", "youtube_gl": "", "play_region": ""}
+	report := Report{Verdict: "abstain", Summary: "Google region unknown: insufficient evidence", Data: data, Sources: []Source{}, CachedAt: s.now()}
+	if s.Checks == nil {
+		return report
 	}
-	res := u.Check(ctx, []string{"google_region", "youtube_premium"})
-	sent := false
-	tld, gl, play := "", "", ""
+	res := s.Checks.Check(ctx, []string{"google_region"})
+	data["results"] = res
+	report.Sources = []Source{{ID: "google"}}
 	for _, r := range res {
-		if r.Service == "google_region" && strings.Contains(r.Evidence, "sent_to_china=true") {
-			sent = true
+		if r.Service != "google_region" || (r.Status != unlock.Yes && r.Status != unlock.No) {
+			continue
 		}
-		if strings.Contains(r.Evidence, "google.cn") {
-			tld = "google.cn"
-			sent = true
-		} else if strings.Contains(r.Evidence, "google.com.hk") {
-			tld = "google.com.hk"
-			sent = true
-		} else if tld == "" {
-			tld = "google.com"
+		sent := unlock.SentToChina(r)
+		data["sent_to_china"] = sent
+		data["google_tld"] = r.GoogleTLD
+		data["youtube_gl"] = r.YouTubeGL
+		data["play_region"] = r.PlayRegion
+		report.Verdict = "ok"
+		if sent {
+			report.Verdict = "risky"
 		}
-		if r.Region != "" && gl == "" {
-			gl = r.Region
+		report.Summary = "Google region evidence does not indicate mainland China"
+		if sent {
+			report.Summary = "Google region evidence indicates mainland China (送中)"
 		}
 	}
-	v := "ok"
-	if sent {
-		v = "risky"
-	}
-	return Report{
-		Verdict: v,
-		Summary: gfw.ExplainWallVsSent("ok", sent),
-		Data:    map[string]any{"sent_to_china": sent, "google_tld": tld, "youtube_gl": gl, "play_region": play},
-		Sources: []Source{{ID: "google"}}, CachedAt: s.now(),
-	}
+	return report
 }
 
 // AIEnv is the P1 verdict.
 func (s *Service) AIEnv(ctx context.Context, includeCLI bool) Report {
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	services := []string{"claude", "chatgpt", "gemini", "grok", "copilot", "meta_ai", "perplexity"}
-	results := s.Checks.Check(ctx, services)
-	traces := s.traces(ctx)
-	v4, v6 := "", ""
-	if s.Egress != nil {
-		v4, v6 = s.Egress(ctx)
-	}
-	type fix struct {
-		Severity string `json:"severity"`
-		Issue    string `json:"issue"`
-		How      string `json:"how"`
-	}
-	var fixes []fix
-	per := []map[string]any{}
-	blocked := false
-	ips := map[string]struct{}{}
-	for _, r := range results {
-		seen := ""
-		for _, t := range traces {
-			if strings.Contains(t.URL, strings.Split(r.Service, "_")[0]) || (r.Service == "chatgpt" && strings.Contains(t.URL, "chatgpt")) || (r.Service == "claude" && strings.Contains(t.URL, "claude")) {
-				seen = t.IP
-			}
-		}
-		per = append(per, map[string]any{"service": r.Service, "available": r.Status == unlock.Yes || r.Status == unlock.WebOnly || r.Status == unlock.AppOnly, "seen_ip": seen, "region": r.Region, "status": r.Status})
-		if r.Status == unlock.No && (r.Service == "claude" || r.Service == "chatgpt" || r.Service == "gemini") {
-			blocked = true
-			fixes = append(fixes, fix{"high", r.Service + "_unavailable", "switch to an egress in a supported region"})
-		}
-	}
-	for _, t := range traces {
-		if t.IP != "" {
-			ips[t.IP] = struct{}{}
-		}
-	}
-	consistent := len(ips) <= 1
-	if len(ips) > 1 {
-		fixes = append([]fix{{"high", "egress_mismatch", "the AI sites and telemetry domains do not see the same egress; fix the proxy rules so those domains share one path"}}, fixes...)
-	}
-	ipv6Bypass := false
-	if v4 != "" && v6 != "" {
-		p4 := s.lookupCC(v4)
-		p6 := s.lookupCC(v6)
-		if p4 != "" && p6 != "" && p4 != p6 {
-			ipv6Bypass = true
-			fixes = append(fixes, fix{"high", "ipv6_bypass", "disable IPv6 or route ::/0 through the proxy"})
-		}
-	}
-	dnsLeak := false
-	if s.DNS != nil {
-		rep := s.DNS.Resolvers(ctx)
-		for _, r := range rep {
-			if r.CC != "" && v4 != "" && r.CC != s.lookupCC(v4) {
-				dnsLeak = true
-			}
-		}
-	}
-	if dnsLeak {
-		fixes = append(fixes, fix{"medium", "dns_leak", "point the system resolver at the proxy's DNS or a non-local DoH"})
-	}
-	tzIssue := timezoneIssue(s.lookupCC(v4))
-	if tzIssue {
-		fixes = append(fixes, fix{"medium", "timezone_mismatch", "set the system timezone to the egress country"})
-	}
-	if includeCLI {
-		proxy := os.Getenv("HTTPS_PROXY")
-		if proxy == "" {
-			proxy = os.Getenv("https_proxy")
-		}
-		if proxy == "" {
-			fixes = append(fixes, fix{"medium", "cli_proxy_unset", "export HTTPS_PROXY so Claude Code and Codex use the same egress as the browser"})
-		}
-	}
-	v := "safe"
-	if blocked {
-		v = "blocked"
-	} else if len(fixes) > 0 {
-		v = "risky"
-	}
-	if fixes == nil {
-		fixes = []fix{}
-	}
-	sum := "AI environment " + v
-	if len(fixes) > 0 {
-		sum = "VERDICT detail: " + fixes[0].Issue + " — " + fixes[0].How
-	}
-	data := map[string]any{
-		"verdict": v, "fixes": fixes, "per_service": per,
-		"egress_consistency": consistent, "ipv6_bypass": ipv6Bypass, "dns_leak": dnsLeak,
-		"timezone_mismatch": tzIssue, "traces": traces,
-	}
-	return Report{Verdict: v, Summary: sum, Data: data, Sources: []Source{{ID: "unlock"}, {ID: "trace"}}, CachedAt: s.now()}
-}
-
-type traceHit struct {
-	URL string `json:"url"`
-	IP  string `json:"ip"`
-	Loc string `json:"loc"`
-}
-
-func (s *Service) traces(ctx context.Context) []traceHit {
-	if s.Checks == nil || s.Checks.Get == nil {
-		return nil
-	}
-	urls := []string{
-		"https://claude.ai/cdn-cgi/trace",
-		"https://chatgpt.com/cdn-cgi/trace",
-		"https://api.anthropic.com/cdn-cgi/trace",
-		"https://statsigapi.net/cdn-cgi/trace",
-		"https://browser.sentry.io/cdn-cgi/trace",
-	}
-	var out []traceHit
-	for _, u := range urls {
-		r := s.Checks.Get.Get(ctx, u, nil)
-		ip, loc := "", ""
-		for _, line := range strings.Split(r.Body, "\n") {
-			if strings.HasPrefix(line, "ip=") {
-				ip = strings.TrimPrefix(line, "ip=")
-			}
-			if strings.HasPrefix(line, "loc=") {
-				loc = strings.TrimPrefix(line, "loc=")
-			}
-		}
-		if ip != "" || r.Err == nil && r.Body != "" {
-			out = append(out, traceHit{URL: u, IP: ip, Loc: loc})
-		}
-	}
-	return out
-}
-
-func (s *Service) lookupCC(ip string) string {
-	addr, err := netip.ParseAddr(ip)
-	if err != nil {
-		return ""
-	}
-	return s.Look.Lookup(addr).CC
-}
-
-func timezoneIssue(cc string) bool {
-	if cc == "" {
-		return false
-	}
-	_, offset := time.Now().Zone()
-	hours := offset / 3600
-	switch cc {
-	case "CN", "HK", "SG":
-		return hours != 8
-	case "JP":
-		return hours != 9
-	case "US":
-		return hours < -10 || hours > -4
-	case "GB":
-		return hours < 0 || hours > 1
-	case "DE":
-		return hours < 0 || hours > 2
-	default:
-		return false
-	}
+	return s.aiEnv(ctx, includeCLI)
 }
 
 // DNSLeak runs the comparative resolver check.

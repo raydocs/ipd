@@ -7,9 +7,11 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -181,7 +183,15 @@ func Run(ctx context.Context, f File, checker Checker, runner Runner, rename fun
 		}(i, p)
 	}
 	wg.Wait()
-	yamlOut, err := RenameYAML(f, out)
+	yamlOut, renames, err := renameYAML(f, out)
+	if err == nil {
+		for i := range out {
+			out[i].Renamed = out[i].Name
+			if name, ok := renames[out[i].Name]; ok {
+				out[i].Renamed = name
+			}
+		}
+	}
 	return out, yamlOut, err
 }
 
@@ -221,26 +231,243 @@ func flagOf(region string) string {
 	return "·"
 }
 
-// RenameYAML rewrites proxy names and keeps the count and other fields.
+// RenameYAML rewrites proxy names and supported policy references without mutating f.
+// Generated names get deterministic suffixes when they collide with existing
+// targets. Ambiguous source names cannot be safely rewritten and return an error.
 func RenameYAML(f File, outcomes []Outcome) (string, error) {
+	text, _, err := renameYAML(f, outcomes)
+	return text, err
+}
+
+func renameYAML(f File, outcomes []Outcome) (string, map[string]string, error) {
 	byName := map[string]string{}
 	for _, o := range outcomes {
 		byName[o.Name] = o.Renamed
 	}
+	reserved := map[string]bool{
+		"DIRECT": true, "REJECT": true, "REJECT-DROP": true,
+		"PASS": true, "COMPATIBLE": true, "GLOBAL": true,
+	}
+	used := maps.Clone(reserved)
+	for name := range byName {
+		// A generated name must not become another outcome's source on replay.
+		used[name] = true
+	}
+	groupNames := map[string]bool{}
+	groups, _ := f.Raw["proxy-groups"].([]any)
+	for _, item := range groups {
+		g, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := str(g["name"])
+		groupNames[name], used[name] = true, true
+	}
+	// Reserve external targets in every supported reference field, not just groups.
+	if _, err := rewritePolicyReferences(f.Raw, func(name string) string {
+		used[name] = true
+		return name
+	}); err != nil {
+		return "", nil, err
+	}
 	proxies, _ := f.Raw["proxies"].([]any)
+	counts := map[string]int{}
 	for _, item := range proxies {
+		if p, ok := item.(map[string]any); ok {
+			name := str(p["name"])
+			counts[name]++
+			used[name] = true
+		}
+	}
+	renames := map[string]string{}
+	proxies = slices.Clone(proxies)
+	for i, item := range proxies {
 		m, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		if n, ok := byName[str(m["name"])]; ok && n != "" {
-			m["name"] = n
+		old := str(m["name"])
+		requested := byName[old]
+		if requested == "" || requested == old {
+			continue
+		}
+		if counts[old] > 1 || reserved[old] || groupNames[old] {
+			return "", nil, fmt.Errorf("cannot rename ambiguous proxy name %q", old)
+		}
+		name := requested
+		for suffix := 2; used[name]; suffix++ {
+			name = fmt.Sprintf("%s (%d)", requested, suffix)
+		}
+		used[name] = true
+		renames[old] = name
+		m = maps.Clone(m)
+		m["name"] = name
+		proxies[i] = m
+	}
+	doc := maps.Clone(f.Raw)
+	if _, ok := doc["proxies"].([]any); ok {
+		doc["proxies"] = proxies
+	}
+	doc, err := rewritePolicyReferences(doc, func(old string) string {
+		if name, ok := renames[old]; ok {
+			return name
+		}
+		return old
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	b, err := yaml.Marshal(doc)
+	return string(b), renames, err
+}
+
+// Only visit documented reference locations, never arbitrary strings or map keys.
+func rewritePolicyReferences(raw map[string]any, replace func(string) string) (map[string]any, error) {
+	doc := maps.Clone(raw)
+	if proxies, ok := doc["proxies"]; ok {
+		doc["proxies"] = rewriteDialerList(proxies, replace)
+	}
+	groups, hasGroups := doc["proxy-groups"].([]any)
+	groups = slices.Clone(groups)
+	for i, item := range groups {
+		g, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		members, ok := g["proxies"].([]any)
+		if !ok {
+			continue
+		}
+		members = slices.Clone(members)
+		for j, member := range members {
+			if name, ok := member.(string); ok {
+				members[j] = replace(name)
+			}
+		}
+		g = maps.Clone(g)
+		g["proxies"] = members
+		groups[i] = g
+	}
+	if hasGroups {
+		doc["proxy-groups"] = groups
+	}
+	if rules, ok := doc["rules"]; ok {
+		rewritten, err := rewriteRuleList(rules, replace)
+		if err != nil {
+			return nil, err
+		}
+		doc["rules"] = rewritten
+	}
+	if subRules, ok := doc["sub-rules"].(map[string]any); ok {
+		subRules = maps.Clone(subRules)
+		for name, rules := range subRules {
+			rewritten, err := rewriteRuleList(rules, replace)
+			if err != nil {
+				return nil, err
+			}
+			subRules[name] = rewritten
+		}
+		doc["sub-rules"] = subRules
+	}
+	if providers, ok := doc["proxy-providers"].(map[string]any); ok {
+		providers = maps.Clone(providers)
+		for name, item := range providers {
+			p, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			p = maps.Clone(p)
+			if override, ok := p["override"].(map[string]any); ok {
+				p["override"] = rewriteDialer(override, replace)
+			}
+			if payload, ok := p["payload"]; ok {
+				p["payload"] = rewriteDialerList(payload, replace)
+			}
+			providers[name] = p
+		}
+		doc["proxy-providers"] = providers
+	}
+	return doc, nil
+}
+
+func rewriteDialerList(raw any, replace func(string) string) any {
+	items, ok := raw.([]any)
+	if !ok {
+		return raw
+	}
+	items = slices.Clone(items)
+	for i, item := range items {
+		if p, ok := item.(map[string]any); ok {
+			items[i] = rewriteDialer(p, replace)
 		}
 	}
-	// Also rename proxy groups that reference old names is intentionally left;
-	// the proxy entries themselves keep a stable count.
-	b, err := yaml.Marshal(f.Raw)
-	return string(b), err
+	return items
+}
+
+func rewriteDialer(p map[string]any, replace func(string) string) map[string]any {
+	if name, ok := p["dialer-proxy"].(string); ok {
+		p = maps.Clone(p)
+		p["dialer-proxy"] = replace(name)
+	}
+	return p
+}
+
+func rewriteRuleList(raw any, replace func(string) string) (any, error) {
+	rules, ok := raw.([]any)
+	if !ok {
+		return raw, nil
+	}
+	rules = slices.Clone(rules)
+	for i, item := range rules {
+		if rule, ok := item.(string); ok {
+			rewritten, err := rewriteRule(rule, replace)
+			if err != nil {
+				return nil, err
+			}
+			rules[i] = rewritten
+		}
+	}
+	return rules, nil
+}
+
+func rewriteRule(rule string, replace func(string) string) (string, error) {
+	parts := strings.Split(rule, ",")
+	var target int
+	// Match mihomo's policy position, including comma-containing logic/regex
+	// payloads and trailing options. SUB-RULE targets belong to another namespace.
+	switch strings.ToUpper(strings.TrimSpace(parts[0])) {
+	case "MATCH":
+		target = 1
+	case "AND", "OR", "NOT", "DOMAIN-REGEX", "PROCESS-NAME-REGEX", "PROCESS-PATH-REGEX":
+		if len(parts) < 3 {
+			return rule, nil
+		}
+		target = len(parts) - 1
+	case "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-WILDCARD", "GEOSITE",
+		"GEOIP", "SRC-GEOIP", "IP-ASN", "SRC-IP-ASN", "IP-CIDR", "IP-CIDR6", "SRC-IP-CIDR",
+		"IP-SUFFIX", "SRC-IP-SUFFIX", "SRC-PORT", "DST-PORT", "IN-PORT", "DSCP",
+		"PROCESS-NAME", "PROCESS-PATH", "PROCESS-NAME-WILDCARD", "PROCESS-PATH-WILDCARD",
+		"NETWORK", "UID", "IN-TYPE", "IN-USER", "IN-NAME", "REMATCH-NAME", "RULE-SET":
+		target = 2
+	default:
+		return rule, nil
+	}
+	if len(parts) <= target {
+		return rule, nil
+	}
+	field := parts[target]
+	old := strings.TrimSpace(field)
+	name := replace(old)
+	if name == old {
+		return rule, nil
+	}
+	if strings.ContainsAny(name, ",\r\n") || strings.TrimSpace(name) != name {
+		return "", fmt.Errorf("cannot encode renamed proxy %q as rule policy target", name)
+	}
+	start := strings.Index(field, old)
+	end := start + len(old)
+	parts[target] = field[:start] + name + field[end:]
+	return strings.Join(parts, ","), nil
 }
 
 func writeTemp(f File) (string, error) {
