@@ -58,9 +58,6 @@ func (e *Engine) MergeSource(meta SourceMeta, rows []SourceRow) int {
 	}
 	meta.Rows = n
 	meta.Enabled = true
-	if meta.UpdatedAt.IsZero() {
-		meta.UpdatedAt = time.Now().UTC()
-	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.tables == nil {
@@ -69,12 +66,20 @@ func (e *Engine) MergeSource(meta SourceMeta, rows []SourceRow) int {
 	if e.byID == nil {
 		e.byID = map[string]int{}
 	}
+	old := e.mapped[meta.ID]
+	delete(e.mapped, meta.ID)
 	e.tables[meta.ID] = tbl
+	e.notePrefixLocked(meta.ID, meta.UpdatedAt)
 	if i, ok := e.byID[meta.ID]; ok {
 		e.meta[i] = meta
 	} else {
 		e.byID[meta.ID] = len(e.meta)
 		e.meta = append(e.meta, meta)
+	}
+	// The write lock drained every reader of old before retirement. Keep it
+	// through Close so publication and mapping lifetime share one boundary.
+	if old != nil {
+		_ = old.Close()
 	}
 	return n
 }
@@ -106,16 +111,27 @@ func (e *Engine) AttachMMDB(path string) error {
 	return nil
 }
 
-// NewFrom replaces the snapshot. Used by ingest reload.
+// Reload replaces the entire prefix snapshot. Empty or wholly invalid input
+// retains the last good snapshot, just like MergeSource and InstallSnapshot.
 func (e *Engine) Reload(meta []SourceMeta, rows []SourceRow) {
+	if e == nil || len(rows) == 0 {
+		return
+	}
 	next := &Engine{tables: map[string]*bart.Table[Rec]{}, byID: map[string]int{}}
-	next.load(snapshot{Meta: meta, Rows: rows})
+	if next.load(snapshot{Meta: meta, Rows: rows}) == 0 {
+		return
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	old := e.mapped
+	e.mapped = nil
 	e.tables = next.tables
 	e.meta = next.meta
 	e.byID = next.byID
 	e.prefixTimes = next.prefixTimes
+	for _, mt := range old {
+		_ = mt.Close()
+	}
 }
 
 type snapshot struct {
@@ -129,7 +145,7 @@ type SourceRow struct {
 	Rec    Rec
 }
 
-func (e *Engine) load(s snapshot) {
+func (e *Engine) load(s snapshot) int {
 	e.meta = append([]SourceMeta(nil), s.Meta...)
 	e.byID = map[string]int{}
 	for i := range e.meta {
@@ -160,13 +176,23 @@ func (e *Engine) load(s snapshot) {
 			e.meta[i].Rows = counts[e.meta[i].ID]
 		}
 		e.meta[i].Stale = Stale(e.meta[i], time.Now().UTC())
-		e.notePrefixLocked(e.meta[i].ID, e.meta[i].UpdatedAt)
 	}
+	n := 0
+	for id, count := range counts {
+		n += count
+		var at time.Time
+		if i, ok := e.byID[id]; ok {
+			at = e.meta[i].UpdatedAt
+		}
+		e.notePrefixLocked(id, at)
+	}
+	return n
 }
 
-// SnapshotAge is the build time of the prefix snapshot and how many seconds
-// old it is. DB-IP and the prefix-to-ASN table are the clock; the older of
-// the two wins. Bundled data uses those sources' UpdatedAt.
+// SnapshotAge reports the oldest loaded DB-IP / BGP source time, or the
+// oldest loaded prefix source if neither is present. A missing timestamp in
+// that clock set returns (zero time, 0): unknown, not fresh. Future ages clamp
+// to zero. Each call observes one atomic engine state, not a multi-call read.
 func (e *Engine) SnapshotAge(now time.Time) (time.Time, int64) {
 	if e == nil {
 		return time.Time{}, 0
@@ -185,7 +211,7 @@ func (e *Engine) SnapshotAge(now time.Time) (time.Time, int64) {
 }
 
 func (e *Engine) notePrefixLocked(id string, at time.Time) {
-	if at.IsZero() || (id != "bgp" && id != "dbip_lite") {
+	if id != "bgp" && id != "dbip_lite" {
 		return
 	}
 	if e.prefixTimes == nil {
@@ -198,8 +224,11 @@ func (e *Engine) prefixAtLocked() time.Time {
 	var oldest time.Time
 	for _, id := range []string{"bgp", "dbip_lite"} {
 		t, ok := e.prefixTimes[id]
-		if !ok || t.IsZero() {
+		if !ok {
 			continue
+		}
+		if t.IsZero() {
+			return time.Time{}
 		}
 		if oldest.IsZero() || t.Before(oldest) {
 			oldest = t
@@ -208,12 +237,27 @@ func (e *Engine) prefixAtLocked() time.Time {
 	if !oldest.IsZero() {
 		return oldest
 	}
-	for _, m := range e.meta {
-		if !m.Enabled || m.UpdatedAt.IsZero() {
-			continue
+	// Only queryable prefix data participates in the fallback clock, not
+	// metadata-only placeholders or an attached MMDB's local open time.
+	consider := func(id string) bool {
+		i, ok := e.byID[id]
+		if !ok || e.meta[i].UpdatedAt.IsZero() {
+			return false
 		}
-		if oldest.IsZero() || m.UpdatedAt.Before(oldest) {
-			oldest = m.UpdatedAt
+		at := e.meta[i].UpdatedAt
+		if oldest.IsZero() || at.Before(oldest) {
+			oldest = at
+		}
+		return true
+	}
+	for id, tbl := range e.tables {
+		if tbl.Size() > 0 && !consider(id) {
+			return time.Time{}
+		}
+	}
+	for id := range e.mapped {
+		if !consider(id) {
+			return time.Time{}
 		}
 	}
 	return oldest
