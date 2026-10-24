@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -115,12 +114,35 @@ func (s *Server) favicon(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
+// dnsSessionPath checks each decoded path prefix before dot-segment removal.
+// Checking only path.Clean loses bearers in e.g. /v1//dnsleak/token/../../sources.
+func dnsSessionPath(p string) bool {
+	var stack []string
+	for _, segment := range strings.Split(p, "/") {
+		switch segment {
+		case "", ".":
+			continue
+		case "..":
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		default:
+			stack = append(stack, segment)
+		}
+		if len(stack) >= 2 && stack[0] == "v1" && stack[1] == "dnsleak" {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) note(r *http.Request) {
-	// DNS bearer paths and callers must never enter persistent request/IP logs.
-	p := path.Clean(r.URL.Path)
-	if r.URL.Path == "/v1/dnsleak" || strings.HasPrefix(r.URL.Path, "/v1/dnsleak/") || p == "/v1/dnsleak" || strings.HasPrefix(p, "/v1/dnsleak/") {
+	// URL.Path has already been percent-decoded by net/http. Do not persist any
+	// prefix that entered the sensitive namespace, even if later segments leave it.
+	if dnsSessionPath(r.URL.Path) {
 		return
 	}
+
 	if s.Svc.DB == nil || s.Svc.Cfg == nil {
 		return
 	}
@@ -175,7 +197,10 @@ func (s *Server) writeSSE(w http.ResponseWriter, rep app.Report) {
 		rep = s.Svc.WithSnapshot(rep)
 	}
 	w.Header().Set("content-type", "text/event-stream")
-	w.Header().Set("cache-control", "no-cache")
+	// Session bearers require the stricter policy set by dnsSessionResponse.
+	if w.Header().Get("Cache-Control") != "no-store" {
+		w.Header().Set("cache-control", "no-cache")
+	}
 	b, _ := json.Marshal(rep)
 	fmt.Fprintf(w, "event: local\ndata: %s\n\n", b)
 	fmt.Fprintf(w, "event: done\ndata: {}\n\n")
@@ -388,6 +413,21 @@ func (s *Server) dnsSessionResponse(w http.ResponseWriter, r *http.Request, rep 
 		http.Error(w, err.Error(), status)
 		return
 	}
+	// The generic text renderer compacts/truncates values. Session capabilities
+	// and observations must remain complete, including long names and IPv6/ECS.
+	// Keep this exception local to DNS; JSON/Markdown/SSE keep their wire schemas.
+	if r.URL.Query().Get("stream") != "1" && negotiate(r, true) == "text" {
+		rep = s.Svc.WithSnapshot(rep)
+		data, _ := json.Marshal(rep.Data)
+		rep.Data = nil
+		header, contentType := Render("text", rep)
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("X-IPD-Verdict", rep.Verdict)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "%sdata: %s\n", header, data)
+		return
+	}
+
 	s.write(w, r, http.StatusOK, rep)
 }
 

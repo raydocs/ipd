@@ -30,9 +30,11 @@ A/AAAA answers are fixed documentation-only addresses (`192.0.2.1`,
 `2001:db8::1`); TXT answers contain `ipd`. TTL is zero, recursion is unavailable.
 Outside-zone/disabled/non-IN queries return REFUSED. Unknown, expired, unissued
 or extra-label names inside the zone return authoritative NXDOMAIN. The zone
-apex returns NOERROR/NODATA and does not create a session. Invalid question counts return FORMERR and
-unsupported opcodes return NOTIMP. A random name merely containing `.dns.` is
-never accepted.
+apex and an issued, unexpired `<token>.dns.<domain>.` parent return
+NOERROR/NODATA without collecting or consuming a child name. This permits
+QNAME-minimization; unknown/expired token parents still return NXDOMAIN. Invalid
+question counts return FORMERR and unsupported opcodes return NOTIMP. A random
+name merely containing `.dns.` is never accepted.
 
 ## Bounds and privacy
 
@@ -51,9 +53,13 @@ never accepted.
   less-specific prefix stays less-specific); invalid ECS is omitted. Raw qnames,
   raw ECS host addresses, HTTP visitor addresses and headers are not retained by
   the session recorder. Derived names are returned to the bearer, not stored.
-- Session responses use `Cache-Control: no-store`. Only these HTTP paths (including
-  canonicalization redirects) bypass the application's persistent visitor/path
-  logging; unrelated HTTP behavior, rate limits and negotiation are unchanged.
+- Default plain-text responses include a complete `data: <JSON>` line (no generic
+  renderer truncation of names or observations); JSON/Markdown shapes are unchanged.
+  Session responses, including POST/GET SSE, use `Cache-Control: no-store`.
+  Only these HTTP paths (including decoded prefixes reached before repeated-slash
+  and dot-segment canonicalization removes them) bypass the application's
+  persistent visitor/path logging; unrelated HTTP behavior, rate limits and
+  negotiation are unchanged.
   No session or observation is written to SQLite. Operators must separately keep
   bearer paths out of any external proxy/access logs; this change configures none.
 - Treat both token and query names as secrets until expiry. They are capabilities,
@@ -72,7 +78,10 @@ is deliberately unchanged. Browser automation and UI are out of scope.
 UDP and TCP share the exact `Service.DNSSessions` recorder. `cli.aux` now serves
 that recorder instead of an empty `OnQuery` callback. Both transports bind before
 serving; a bind/runtime failure or cancellation closes both sockets and joins
-both listener goroutines. The injected clock supports deterministic expiry tests.
+both listener goroutines. Terminal TCP Accept failures are signaled before the
+DNS library waits for active clients; accepted TCP connections and both sockets
+are closed before either server is joined. The injected clock supports
+deterministic expiry tests.
 
 ## Local verification and integration boundary
 

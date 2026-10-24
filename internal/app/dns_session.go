@@ -11,7 +11,7 @@ func (s *Service) CreateDNSSession() (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	return Report{Verdict: "abstain", Summary: "DNS observation session issued; resolve the query names explicitly. No browser path has been tested.", Data: session, Sources: []Source{}, CachedAt: s.now()}, nil
+	return Report{Verdict: "abstain", Summary: "DNS observation session issued; resolve the query names explicitly. No browser path has been tested.", Data: map[string]any{"token": session.Token, "query_names": session.QueryNames, "expires_at": session.ExpiresAt}, Sources: []Source{}, CachedAt: s.now()}, nil
 }
 
 // DNSSession reads only this session's authoritative observations. Absence is
@@ -28,5 +28,5 @@ func (s *Service) DNSSession(token string) (Report, error) {
 	if len(result.Observations) > 0 {
 		summary = "Recursive DNS sources observed only; browser path and blocking/leak causality remain unknown."
 	}
-	return Report{Verdict: "abstain", Summary: summary, Data: result, Sources: []Source{}, CachedAt: s.now()}, nil
+	return Report{Verdict: "abstain", Summary: summary, Data: map[string]any{"expires_at": result.ExpiresAt, "observations": result.Observations}, Sources: []Source{}, CachedAt: s.now()}, nil
 }

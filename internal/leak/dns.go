@@ -173,6 +173,71 @@ func (s *DNSServer) Serve(ctx context.Context, addr string) error {
 	return s.ServeListeners(ctx, udp, tcp)
 }
 
+// sessionListener reports terminal Accept errors before miekg/dns waits for
+// active connection handlers. Closing it also closes every accepted connection.
+type sessionListener struct {
+	net.Listener
+	mu     sync.Mutex
+	closed bool
+	conns  map[*sessionConn]struct{}
+	failed chan error
+}
+
+type sessionConn struct {
+	net.Conn
+	owner *sessionListener
+}
+
+func (c *sessionConn) Close() error {
+	err := c.Conn.Close()
+	c.owner.mu.Lock()
+	delete(c.owner.conns, c)
+	c.owner.mu.Unlock()
+	return err
+}
+
+func (l *sessionListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		l.mu.Lock()
+		closed := l.closed
+		l.mu.Unlock()
+		temporary, ok := err.(net.Error)
+		if !closed && (!ok || !temporary.Temporary()) {
+			select {
+			case l.failed <- err:
+			default:
+			}
+		}
+		return nil, err
+	}
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		_ = c.Close()
+		return nil, net.ErrClosed
+	}
+	tracked := &sessionConn{Conn: c, owner: l}
+	l.conns[tracked] = struct{}{}
+	l.mu.Unlock()
+	return tracked, nil
+}
+
+func (l *sessionListener) Close() error {
+	l.mu.Lock()
+	l.closed = true
+	conns := make([]*sessionConn, 0, len(l.conns))
+	for c := range l.conns {
+		conns = append(conns, c)
+	}
+	l.mu.Unlock()
+	err := l.Listener.Close()
+	for _, c := range conns {
+		_ = c.Close()
+	}
+	return err
+}
+
 // ServeListeners owns and closes both supplied listeners, including on startup
 // failure. This also permits deterministic local integration without port races.
 func (s *DNSServer) ServeListeners(ctx context.Context, udp net.PacketConn, tcp net.Listener) error {
@@ -181,12 +246,14 @@ func (s *DNSServer) ServeListeners(ctx context.Context, udp net.PacketConn, tcp 
 	if ctx.Err() != nil {
 		return nil
 	}
+	tracked := &sessionListener{Listener: tcp, conns: make(map[*sessionConn]struct{}), failed: make(chan error, 1)}
+	defer tracked.Close()
 	uReady, tReady := make(chan struct{}), make(chan struct{})
 	var uOnce, tOnce sync.Once
 	uStarted := func() { uOnce.Do(func() { close(uReady) }) }
 	tStarted := func() { tOnce.Do(func() { close(tReady) }) }
 	u := &dns.Server{PacketConn: udp, Net: "udp", Handler: s, NotifyStartedFunc: uStarted}
-	t := &dns.Server{Listener: tcp, Net: "tcp", Handler: s, NotifyStartedFunc: tStarted}
+	t := &dns.Server{Listener: tracked, Net: "tcp", Handler: s, NotifyStartedFunc: tStarted}
 	done := make(chan error, 2)
 	go func() { err := u.ActivateAndServe(); uStarted(); done <- err }()
 	go func() { err := t.ActivateAndServe(); tStarted(); done <- err }()
@@ -209,6 +276,9 @@ func (s *DNSServer) ServeListeners(ctx context.Context, udp net.PacketConn, tcp 
 			select {
 			case <-ctx.Done():
 				break loop
+			case err := <-tracked.failed:
+				result = err
+				break loop
 			case err := <-done:
 				finished++
 				result = err
@@ -220,11 +290,19 @@ func (s *DNSServer) ServeListeners(ctx context.Context, udp net.PacketConn, tcp 
 			}
 		}
 	}
+	// Stop both transports and force-close accepted connections BEFORE joining
+	// either server. A terminal Accept error otherwise waits for busy TCP clients
+	// inside miekg/dns, so waiting for ActivateAndServe alone never signals failure.
+	_ = udp.Close()
+	_ = tracked.Close()
 	_ = u.Shutdown()
 	_ = t.Shutdown()
 	for finished < 2 {
 		<-done
 		finished++
+	}
+	if ctx.Err() != nil {
+		return nil
 	}
 	return result
 }
@@ -277,14 +355,23 @@ func (s *DNSServer) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 			index = i
 		}
 	}
-	token := ""
-	if len(labels) == 2 {
-		token = tokenFromName(labels[1], strings.TrimSuffix(strings.TrimPrefix(s.zone, "dns."), "."))
+	// Issued tokens are empty non-terminals: their q0/q1/q2 children exist.
+	// QNAME-minimizing resolvers may ask for NS at this parent first.
+	domain := strings.TrimSuffix(strings.TrimPrefix(s.zone, "dns."), ".")
+	parent := tokenFromName(name, domain)
+	token := parent
+	if parent == "" && len(labels) == 2 {
+		token = tokenFromName(labels[1], domain)
 	}
 	s.mu.Lock()
 	now := s.options.Now().UTC()
 	s.cleanupLocked(now)
 	st, found := s.sessions[token]
+	if found && parent != "" {
+		s.mu.Unlock()
+		_ = w.WriteMsg(m)
+		return
+	}
 	if !found || index < 0 {
 		s.mu.Unlock()
 		m.Rcode = dns.RcodeNameError
