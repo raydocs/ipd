@@ -208,7 +208,7 @@ func TestLatencyInvalidNumbersAndLoss(t *testing.T) {
 	}
 }
 
-func TestLatencySVGAllDynamicText(t *testing.T) {
+func TestLatencySVGDynamicLabels(t *testing.T) {
 	attack := `</text><script/><a href="https://example.invalid/" onload="x">&'"`
 	p := &latencyProvider{name: attack, enabled: true, samples: []probe.Sample{
 		{Provider: attack, City: attack, Country: attack, Healthy: true, ICMP: "ok", RTTMS: 5},
@@ -238,7 +238,7 @@ func TestLatencySVGAllDynamicText(t *testing.T) {
 		}
 	}
 	if strings.Count(text.String(), attack) < 6 {
-		t.Error("target/source/location/error text not preserved")
+		t.Error("target/source/location labels not preserved")
 	}
 	if strings.Contains(svg, "0.000 ms") || !strings.Contains(svg, "Packet loss: unknown") {
 		t.Error("unknown/failed sample presented as successful")
@@ -249,4 +249,58 @@ func TestLatencySVGAllDynamicText(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertLatencyXML(t, rep.Data.(map[string]any)["svg"].(string))
+}
+
+func TestLatencySVGWithholdsRawSampleErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw, reason string
+		healthy           bool
+		icmp              string
+		secrets           []string
+	}{
+		{"credential_url", `Get "https://fixture-user:fixture-secret@provider.example.invalid/measure?token=fixture-token": fixture failure`, "provider reported an error", true, "timeout", []string{"fixture-user", "fixture-secret", "provider.example.invalid", "fixture-token"}},
+		{"internal_host", "dial tcp probe.internal.example.invalid:443: fixture failure", "probe health unavailable or unhealthy", false, "timeout", []string{"probe.internal.example.invalid"}},
+		{"local_path", "open /fixture/private/latency-config: fixture failure", "measurement skipped", true, "skipped", []string{"/fixture/private/latency-config"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := latencyFixture([]probe.Sample{{Provider: "fixture", Healthy: tc.healthy, ICMP: tc.icmp, Error: tc.raw}})
+			rep, err := svc.Latency(context.Background(), "192.0.2.10")
+			if err != nil {
+				t.Fatal(err)
+			}
+			data := rep.Data.(map[string]any)
+			svg := data["svg"].(string)
+			assertLatencyXML(t, svg)
+			// Inspect decoded text too: XML escaping and line wrapping are not redaction.
+			var decoded strings.Builder
+			d := xml.NewDecoder(strings.NewReader(svg))
+			for {
+				tok, err := d.Token()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if text, ok := tok.(xml.CharData); ok {
+					decoded.Write(text)
+				}
+			}
+			for _, secret := range append([]string{tc.raw}, tc.secrets...) {
+				if strings.Contains(svg, secret) || strings.Contains(decoded.String(), secret) {
+					t.Error("raw provider error or sensitive fixture value leaked into SVG")
+				}
+			}
+			if !strings.Contains(decoded.String(), tc.reason) {
+				t.Error("controlled reason missing from SVG")
+			}
+			row := data["rows"].([]map[string]any)[0]
+			if row["error"] != tc.raw {
+				t.Error("raw evidence unexpectedly changed; JSON is explicitly not redacted")
+			}
+			if rep.Verdict != "abstain" {
+				t.Errorf("verdict = %s", rep.Verdict)
+			}
+		})
+	}
 }

@@ -43,6 +43,7 @@ func (s *Service) Latency(ctx context.Context, target string) (Report, error) {
 	valid, failed, unknown, lossy := 0, 0, 0, 0
 	for _, sm := range samples {
 		status, reason := latencyStatus(sm)
+		// Raw errors are diagnostic report evidence, not shareable SVG text.
 		row := map[string]any{
 			"probe": sm.Provider, "cc": sm.Country, "city": sm.City, "asn": sm.ASN,
 			"rtt_ms": nil, "loss": nil, "status": status, "reason": reason,
@@ -120,7 +121,8 @@ func latencyStatus(sm probe.Sample) (string, string) {
 }
 
 // latencySVG only emits static SVG elements/attributes. Every dynamic value is
-// XML text, never markup, a URL, a CSS value or a geographic coordinate.
+// XML text, never markup or a resource/CSS/coordinate attribute. Raw sample
+// errors are deliberately omitted; row reasons come from latencyStatus only.
 func latencySVG(data map[string]any, verdict string, rows []map[string]any) string {
 	lines := []string{
 		"ipd latency | VERDICT: " + verdict,
@@ -150,9 +152,6 @@ func latencySVG(data map[string]any, verdict string, rows []map[string]any) stri
 			fmt.Sprintf("#%d Source: %s | CC: %s | City: %s | AS%d", i+1, row["probe"], row["cc"], row["city"], row["asn"]),
 			fmt.Sprintf("  %s | RTT: %s | Packet loss: %s | %s", row["status"], rtt, loss, row["reason"]),
 		)
-		if err, _ := row["error"].(string); err != "" {
-			lines = append(lines, "  Error: "+err)
-		}
 	}
 	// Wrap plain text before escaping so long/untrusted labels cannot hide the
 	// evidence off-canvas. Layout coordinates are unrelated to probe geography.
