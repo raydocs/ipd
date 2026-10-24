@@ -28,7 +28,7 @@
 1. **可插拔外部核心 runner**：一套接口支持 mihomo/sing-box，不链接 GPL 核心。
    YAML/JSON 按格式及实际协议能力选择，允许强制指定，结果显示 backend；未知/不能可靠转换
    的配置明确 unsupported，不能运行失败后偷偷直连。仅本地子进程 mock，不连接真实机场。
-   [Draft #23](https://github.com/raydocs/ipd/pull/23) `ebd6b24` 已提交，独立审查与 main 候选组合复测进行中，未验收。当前仅原生格式的 runner；跨格式配置转换明确 unsupported，自动协议转换及出口、纯净度和解锁接线仍待后续改进。
+   [Draft #23](https://github.com/raydocs/ipd/pull/23) `ebd6b24` 已提交，组合 Go/Node/nodes race 通过，但首轮独立审查 block：端点归属验证、全局信任/路径策略保真两项 P1，以及清理失败报告 P2 正在返修，未验收。当前仅原生格式的 runner；跨格式配置转换明确 unsupported，自动协议转换及出口、纯净度和解锁接线仍待后续改进。
 2. **latency 语言层跟进**：将 #9 帮助、英文输出与自有错误接入 #11 的 `cliError`/`messageText`，
    保留原始来源错误、SVG 权限/拒绝覆盖与只关闭原 fd 的安全边界。[Draft #22](https://github.com/raydocs/ipd/pull/22) `a25cced` 已提交，独立审查 approve，总控单分支及 main＋#13/#15/#20/#22 组合 Go/Node/相关 race 均通过，已验收；保持 Draft，未合并。
 
