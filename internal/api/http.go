@@ -3,17 +3,20 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"ipd/internal/app"
+	"ipd/internal/leak"
 	"ipd/internal/mcp"
 	"ipd/internal/pow"
 	"ipd/internal/privacy"
@@ -68,6 +71,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/route/targets", s.targets)
 	mux.HandleFunc("POST /v1/latency", s.latency)
 	mux.HandleFunc("GET /v1/jobs/{id}", s.job)
+	mux.HandleFunc("POST /v1/dnsleak", s.dnsSessionCreate)
 	mux.HandleFunc("GET /v1/dnsleak/{token}", s.dnsleak)
 	mux.HandleFunc("POST /v1/report", s.report)
 	mux.HandleFunc("GET /r/{id}", s.share)
@@ -112,6 +116,11 @@ func (s *Server) favicon(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) note(r *http.Request) {
+	// DNS bearer paths and callers must never enter persistent request/IP logs.
+	p := path.Clean(r.URL.Path)
+	if r.URL.Path == "/v1/dnsleak" || strings.HasPrefix(r.URL.Path, "/v1/dnsleak/") || p == "/v1/dnsleak" || strings.HasPrefix(p, "/v1/dnsleak/") {
+		return
+	}
 	if s.Svc.DB == nil || s.Svc.Cfg == nil {
 		return
 	}
@@ -365,12 +374,31 @@ func (s *Server) targets(w http.ResponseWriter, r *http.Request) {
 	s.write(w, r, 200, rep)
 }
 
-func (s *Server) dnsleak(w http.ResponseWriter, r *http.Request) {
-	rep := s.Svc.DNSLeak(r.Context(), 1)
-	if m, ok := rep.Data.(map[string]any); ok {
-		m["token"] = r.PathValue("token")
+func (s *Server) dnsSessionResponse(w http.ResponseWriter, r *http.Request, rep app.Report, err error) {
+	w.Header().Set("Cache-Control", "no-store")
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		if errors.Is(err, leak.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		if !errors.Is(err, leak.ErrNotFound) && !errors.Is(err, leak.ErrDisabled) && !errors.Is(err, leak.ErrCapacity) {
+			http.Error(w, "DNS session unavailable", http.StatusInternalServerError)
+			return
+		}
+		http.Error(w, err.Error(), status)
+		return
 	}
-	s.write(w, r, 200, rep)
+	s.write(w, r, http.StatusOK, rep)
+}
+
+func (s *Server) dnsSessionCreate(w http.ResponseWriter, r *http.Request) {
+	rep, err := s.Svc.CreateDNSSession()
+	s.dnsSessionResponse(w, r, rep, err)
+}
+
+func (s *Server) dnsleak(w http.ResponseWriter, r *http.Request) {
+	rep, err := s.Svc.DNSSession(r.PathValue("token"))
+	s.dnsSessionResponse(w, r, rep, err)
 }
 
 func (s *Server) sources(w http.ResponseWriter, r *http.Request) {

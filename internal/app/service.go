@@ -25,6 +25,7 @@ import (
 	"ipd/internal/dnsbl"
 	"ipd/internal/gfw"
 	"ipd/internal/ingest"
+	"ipd/internal/leak"
 	"ipd/internal/lookup"
 	"ipd/internal/nodes"
 	"ipd/internal/privacy"
@@ -49,6 +50,7 @@ type Service struct {
 	Tracer      func(ctx context.Context, target string) ([]route.Hop, error)
 	Dial        func(ctx context.Context, network, addr string) (net.Conn, error)
 	DNS         ResolverSource
+	DNSSessions *leak.DNSServer
 	nodeChecker nodes.Checker
 	mu          sync.Mutex
 	fp          map[string]Fingerprint
@@ -96,6 +98,7 @@ func New(cfg *config.Config, db *store.Store) *Service {
 		Now:    time.Now,
 		fp:     map[string]Fingerprint{},
 	}
+	s.DNSSessions = leak.NewDNSServer(cfg.Domain, leak.SessionOptions{Enabled: cfg.DNSSessionsEnabled, Now: s.now})
 	// Apply registry so a disabled selection is visible.
 	reg := probe.NewRegistry(cfg.Vantage,
 		probe.Globalping{BaseURL: cfg.GlobalpingURL, Token: cfg.GlobalpingToken},

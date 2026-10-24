@@ -12,6 +12,8 @@ import (
 
 // Config is the process-wide configuration.
 type Config struct {
+	DNSSessionsEnabled bool
+
 	Domain            string
 	HTTPAddr          string
 	DNSAddr           string
@@ -138,6 +140,7 @@ func FromEnv() *Config {
 		PowRequired:   envBool("IPD_POW", false),
 		PowBits:       envInt("IPD_POW_BITS", 12),
 	}
+	c.DNSSessionsEnabled = envBool("IPD_DNS_SESSIONS_ENABLED", false)
 	// Default the refresh job on when the process is allowed to use the network.
 	// IPD_DATA_UPDATE=false keeps a long-running serve on the bundled snapshot.
 	c.DataUpdate = envBool("IPD_DATA_UPDATE", !c.Offline)
