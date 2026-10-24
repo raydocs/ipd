@@ -172,7 +172,10 @@ func icmpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) 
 		return nil, fmt.Errorf("%w (CAP_NET_RAW or ping_group_range)", err)
 	}
 	defer c.Close()
-	p := ipv4.NewPacketConn(c)
+	p, err := traceIPv4Conn(c)
+	if err != nil {
+		return nil, err
+	}
 	var hops []Hop
 	for ttl := 1; ttl <= maxHops; ttl++ {
 		if ctx.Err() != nil {

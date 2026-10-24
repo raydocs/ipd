@@ -4,8 +4,8 @@
 
 This follow-up starts at `19a0b16962a8d249179ce376db3847ba594c3fb4`.
 It changes only raw ICMP/TCP probe generation and reception, their portable wire
-parser/receive-loop fixtures, and this document. It does not change classification,
-app behavior, the UDP extended-error implementation, or enable new network probes.
+parser/receive-loop fixtures, ICMP endpoint wiring, and this document. It does
+not change classification, app behavior, the UDP extended-error implementation, or enable new network probes.
 A packet must identify the currently outstanding probe before it can add a hop;
 only a correlated destination EchoReply completes an ICMP trace.
 
@@ -72,7 +72,7 @@ budget capping and terminal socket errors. The deterministic subset passes with
   applied, `go test ./...` passes. That patch was reversed and is not in this PR.
 - `node --test web/judge.test.mjs` and `git diff --check` pass.
 - `go test -race ./internal/route -run
-  'TestProbeReply|TestRawProbeReply|TestAwaitProbeReply' -count=1` passes.
+  'TestTraceIPv4Conn|TestProbeReply|TestRawProbeReply|TestAwaitProbeReply' -count=1` passes.
 - `GOOS=linux GOARCH=amd64 go test -c ./internal/route` cross-compiles. The Linux
   runtime, raw sockets and actual network behavior were **not executed**.
 
@@ -94,7 +94,37 @@ ICMP receive block, and TCP generation/reception plus `synPacket`. Resolve exact
    imports. Take this branch's complete section from `func icmpTrace` through EOF.
    It already preserves PR5's `return hops, err` on writes and both raw-method
    hop-limit errors, and replaces the unsafe raw completion decisions.
-3. Add this branch's `probe_reply.go`, `probe_reply_test.go` and this document.
+3. Add this branch's `probe_reply.go`, `probe_reply_test.go`, `icmp_conn.go`,
+   `icmp_conn_test.go` and this document.
    Leave PR5's `udp_error*`, classification, app and other files unchanged.
 4. Re-run the checks above in the integration branch. Parent-thread independent
    review remains required; this implementation report is not final approval.
+
+## Round-one review correction: ICMP endpoint wiring
+
+The independent review blocked the original head `9a945cf`: wrapping
+`*icmp.PacketConn` with `ipv4.NewPacketConn` panics after a successful listen.
+Local dependency source `golang.org/x/net@v0.57.0/ipv4/endpoint.go` confirms the
+constructor asserts `c.(net.Conn)`; `icmp/endpoint.go` defines PacketConn as a
+`net.PacketConn` only. `icmp/listen_posix.go` already constructs and stores the
+underlying IPv4 endpoint, which `c.IPv4PacketConn()` returns.
+
+`icmpTrace` now calls the small production `traceIPv4Conn` adapter, which uses
+that accessor and returns an error if no IPv4 endpoint is available. There are
+no fake endpoints, test switches, or mock-only branches in production.
+`TestTraceIPv4ConnWithoutSocket` executes this same adapter with real zero-value
+and nil `*icmp.PacketConn` inputs, with no socket creation or raw permission.
+First retaining the old constructor in the adapter and running
+`go test ./internal/route -run '^TestTraceIPv4ConnWithoutSocket$' -count=1`
+actually failed with `interface conversion: *icmp.PacketConn is not net.Conn:
+missing method Read` (Go test exit 1). Switching to the accessor passes the same
+regression, including under race instrumentation.
+
+This adds host-runtime evidence for the formerly panicking wiring, not evidence
+of successful raw listen, TTL socket options, packet transmission, or Linux
+network runtime. Those remain unexecuted. Both this branch and its isolated PR5
+combination are rechecked with the full Go suite (temporary PR2 portability
+support), Node tests, the wiring/correlation race subset and Linux cross-compile.
+The first-round blocker requires a second fresh-context parent review focused on
+this correction and the unresolved correlation/network limits, not re-approval
+of an unrelated report.
