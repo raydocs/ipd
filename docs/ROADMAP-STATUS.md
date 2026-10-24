@@ -62,5 +62,5 @@
 新增 CLI 显式 `nodes --measure`、本地原生 YAML/JSON、backend 与核心绝对路径参数，
 每节点独立认证代理/TLS 出口请求；结果只给原始序号/backend/受控观测状态，不导出配置凭据。
 默认 Nodes/MCP/HTTP 不启动核心，离线不发包；即使出口观测完整也保持 abstain，不冒充安全结论。
-总控组合 Go/Node/app/CLI/nodes race 通过，但首轮独立审查 block：JSON 标签经 YAML 解码导致节点身份错配、出口地址过滤不足两项 P2 正在返修，尚未验收；真实 core、纯净度/解锁及跨格式转换仍未完成。
+总控组合 Go/Node/app/CLI/nodes race 通过，但首轮独立审查 block：JSON 标签经 YAML 解码导致节点身份错配、出口地址过滤不足两项 P2 已追加修正 `676aabf`，第二轮独立审查及组合复测进行中，尚未验收；真实 core、纯净度/解锁及跨格式转换仍未完成。
 误含父汇总历史的初始 #24 已关闭，由 #25 替代，不计作成果或验收对象。
