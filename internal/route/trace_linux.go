@@ -4,12 +4,12 @@ package route
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
-	"os"
 	"time"
 
 	"golang.org/x/net/icmp"
@@ -166,8 +166,10 @@ func icmpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) 
 		return nil, fmt.Errorf("%w (CAP_NET_RAW or ping_group_range)", err)
 	}
 	defer c.Close()
-	p := ipv4.NewPacketConn(c)
-	id := os.Getpid() & 0xffff
+	p, err := traceIPv4Conn(c)
+	if err != nil {
+		return nil, err
+	}
 	var hops []Hop
 	for ttl := 1; ttl <= maxHops; ttl++ {
 		if ctx.Err() != nil {
@@ -176,9 +178,15 @@ func icmpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) 
 		if err := p.SetTTL(ttl); err != nil {
 			return hops, err
 		}
+		var identity [20]byte
+		if _, err := rand.Read(identity[:]); err != nil {
+			return hops, err
+		}
+		probe := rawProbe{destination: dst, protocol: 1,
+			echoID: binary.BigEndian.Uint16(identity[:2]), echoSeq: binary.BigEndian.Uint16(identity[2:4]), token: identity[4:]}
 		msg := icmp.Message{
 			Type: ipv4.ICMPTypeEcho, Code: 0,
-			Body: &icmp.Echo{ID: id, Seq: ttl, Data: []byte("ipd-trace")},
+			Body: &icmp.Echo{ID: int(probe.echoID), Seq: int(probe.echoSeq), Data: probe.token},
 		}
 		b, err := msg.Marshal(nil)
 		if err != nil {
@@ -188,27 +196,41 @@ func icmpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) 
 		if _, err := c.WriteTo(b, &net.IPAddr{IP: dst.AsSlice()}); err != nil {
 			return hops, err
 		}
-		_ = c.SetReadDeadline(time.Now().Add(450 * time.Millisecond))
 		buf := make([]byte, 1500)
-		n, from, err := c.ReadFrom(buf)
+		hop, done, err := awaitProbeReply(ctx, 450*time.Millisecond, time.Now,
+			func(deadline time.Time) ([]byte, netip.Addr, error) {
+				if err := c.SetReadDeadline(deadline); err != nil {
+					return nil, netip.Addr{}, err
+				}
+				n, from, err := c.ReadFrom(buf)
+				if err != nil {
+					return nil, netip.Addr{}, err
+				}
+				peer := netip.Addr{}
+				if ip, ok := from.(*net.IPAddr); ok {
+					peer, _ = netip.AddrFromSlice(ip.IP)
+					peer = peer.Unmap()
+				}
+				return buf[:n], peer, nil
+			}, func(packet []byte, peer netip.Addr) (Hop, bool, error) { return parseProbeReply(packet, peer, probe) })
+		if ctx.Err() != nil {
+			return hops, ctx.Err()
+		}
+		if hop.IP != "" {
+			hop.RTTMS = float64(time.Since(start).Microseconds()) / 1000
+			hops = append(hops, hop)
+		}
 		if err != nil {
+			if !errors.Is(err, errRawProbeTimeout) {
+				return hops, err
+			}
 			hops = append(hops, Hop{IP: "*"})
 			if realHops(hops) == 0 && ttl >= 4 {
 				return hops, fmt.Errorf("no icmp reply")
 			}
 			continue
 		}
-		peer, _, _ := net.SplitHostPort(from.String())
-		if peer == "" {
-			peer = from.String()
-		}
-		rm, err := icmp.ParseMessage(1, buf[:n])
-		done := false
-		if err == nil && rm.Type == ipv4.ICMPTypeEchoReply {
-			done = true
-		}
-		hops = append(hops, Hop{IP: peer, RTTMS: float64(time.Since(start).Microseconds()) / 1000})
-		if done || peer == dst.String() {
+		if done {
 			return hops, nil
 		}
 	}
@@ -235,21 +257,34 @@ func tcpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) {
 		if err := unix.SetsockoptInt(tcpFD, unix.IPPROTO_IP, unix.IP_TTL, ttl); err != nil {
 			return hops, err
 		}
-		pkt := synPacket(ip, 443, 40000+ttl)
+		var identity [4]byte
+		if _, err := rand.Read(identity[:]); err != nil {
+			return hops, err
+		}
+		probe := rawProbe{destination: dst, protocol: 6, sourcePort: uint16(40000 + ttl), destinationPort: 443, tcpSeq: binary.BigEndian.Uint32(identity[:])}
+		pkt := synPacket(ip, int(probe.destinationPort), int(probe.sourcePort), probe.tcpSeq)
 		start := time.Now()
 		if err := unix.Sendto(tcpFD, pkt, 0, &unix.SockaddrInet4{Port: 443, Addr: ip}); err != nil {
 			return hops, err
 		}
-		hop, done, err := readRawICMP(icmpFD, dst, 450*time.Millisecond)
+		hop, done, err := readRawICMP(ctx, icmpFD, probe, 450*time.Millisecond)
+		if ctx.Err() != nil {
+			return hops, ctx.Err()
+		}
+		if hop.IP != "" {
+			hop.RTTMS = float64(time.Since(start).Microseconds()) / 1000
+			hops = append(hops, hop)
+		}
 		if err != nil {
+			if !errors.Is(err, errRawProbeTimeout) {
+				return hops, err
+			}
 			hops = append(hops, Hop{IP: "*"})
 			if realHops(hops) == 0 && ttl >= 3 {
 				return hops, fmt.Errorf("tcp traceroute got no icmp")
 			}
 			continue
 		}
-		hop.RTTMS = float64(time.Since(start).Microseconds()) / 1000
-		hops = append(hops, hop)
 		if done {
 			return hops, nil
 		}
@@ -257,11 +292,11 @@ func tcpTrace(ctx context.Context, dst netip.Addr, maxHops int) ([]Hop, error) {
 	return hops, fmt.Errorf("hop limit reached before destination")
 }
 
-func synPacket(dst [4]byte, dport, sport int) []byte {
+func synPacket(dst [4]byte, dport, sport int, seq uint32) []byte {
 	hdr := make([]byte, 20)
 	binary.BigEndian.PutUint16(hdr[0:2], uint16(sport))
 	binary.BigEndian.PutUint16(hdr[2:4], uint16(dport))
-	binary.BigEndian.PutUint32(hdr[4:8], uint32(sport*17+dport))
+	binary.BigEndian.PutUint32(hdr[4:8], seq)
 	hdr[12] = 5 << 4
 	hdr[13] = 0x02
 	binary.BigEndian.PutUint16(hdr[14:16], 65535)
@@ -301,27 +336,29 @@ func localV4() [4]byte {
 	return [4]byte{}
 }
 
-func readRawICMP(fd int, dst netip.Addr, wait time.Duration) (Hop, bool, error) {
-	tv := unix.NsecToTimeval(wait.Nanoseconds())
-	_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv)
+func readRawICMP(ctx context.Context, fd int, probe rawProbe, wait time.Duration) (Hop, bool, error) {
 	var buf [1500]byte
-	n, _, err := unix.Recvfrom(fd, buf[:], 0)
-	if err != nil {
-		return Hop{}, false, err
-	}
-	if n < 20 {
-		return Hop{}, false, fmt.Errorf("short icmp")
-	}
-	ihl := int(buf[0]&0x0f) * 4
-	if n < ihl+8 {
-		return Hop{}, false, fmt.Errorf("short icmp")
-	}
-	src := net.IP(buf[12:16]).String()
-	typ := buf[ihl]
-	done := typ == 0 || src == dst.String()
-	// Dest unreachable / echo reply / time exceeded are all useful.
-	if typ != 11 && typ != 3 && typ != 0 {
-		return Hop{}, false, fmt.Errorf("icmp type %d", typ)
-	}
-	return Hop{IP: src}, done, nil
+	return awaitProbeReply(ctx, wait, time.Now,
+		func(deadline time.Time) ([]byte, netip.Addr, error) {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return nil, netip.Addr{}, errRawProbeTimeout
+			}
+			pfd := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+			n, err := unix.Poll(pfd, int((remaining+time.Millisecond-1)/time.Millisecond))
+			if err != nil {
+				return nil, netip.Addr{}, err
+			}
+			if n == 0 {
+				return nil, netip.Addr{}, errRawProbeTimeout
+			}
+			n, _, err = unix.Recvfrom(fd, buf[:], unix.MSG_DONTWAIT)
+			if errors.Is(err, unix.EAGAIN) {
+				return nil, netip.Addr{}, errRawProbeTimeout
+			}
+			if err != nil {
+				return nil, netip.Addr{}, err
+			}
+			return buf[:n], netip.Addr{}, nil
+		}, func(packet []byte, _ netip.Addr) (Hop, bool, error) { return parseRawProbeReply(packet, probe) })
 }
