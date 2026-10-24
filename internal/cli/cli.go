@@ -171,10 +171,7 @@ func dispatch(ctx context.Context, svc *app.Service, cfg *config.Config, g globa
 		}
 		return svc.PortCheck(ctx, args[0], 25, "global")
 	case "nodes":
-		if len(args) == 0 {
-			return app.Report{}, fmt.Errorf("用法：ipd nodes <订阅或 clash.yaml>")
-		}
-		return svc.Nodes(ctx, args[0], nil)
+		return nodesCmd(ctx, svc, args)
 	case "batch":
 		raw, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -213,6 +210,30 @@ func dispatch(ctx context.Context, svc *app.Service, cfg *config.Config, g globa
 		}
 		return app.Report{}, fmt.Errorf("未知命令 %s\n%s", cmd, helpText)
 	}
+}
+
+func nodesCmd(ctx context.Context, svc *app.Service, args []string) (app.Report, error) {
+	measure := false
+	source := ""
+	for _, arg := range args {
+		if arg == "--measure" {
+			if measure {
+				return app.Report{}, fmt.Errorf("--measure 只能指定一次")
+			}
+			measure = true
+		} else if strings.HasPrefix(arg, "--") || source != "" {
+			return app.Report{}, fmt.Errorf("用法：ipd nodes [--measure] <本地 clash.yaml 或内联配置>")
+		} else {
+			source = arg
+		}
+	}
+	if source == "" {
+		return app.Report{}, fmt.Errorf("用法：ipd nodes [--measure] <本地 clash.yaml 或内联配置>")
+	}
+	if measure {
+		return svc.MeasureDirectNodes(ctx, source)
+	}
+	return svc.Nodes(ctx, source, nil)
 }
 
 func discover() string {
@@ -628,7 +649,7 @@ const helpText = `ipd — 给 agent 用的地址情报与网络质量
   ipd leak                 DNS 泄露（WebRTC 请用浏览器页）
   ipd route [--return] [--claimed cn2gia] [目标]
   ipd gfw <ip|主机>        被墙还是仅仅拥塞
-  ipd nodes <clash.yaml>   批量节点（订阅只在本机解析）
+  ipd nodes [--measure] <clash.yaml>  默认仅解析；--measure 显式经 HTTP/SOCKS5 测出口 IP
   ipd batch                从标准输入读 IP
   ipd watch add|ls|rm
   ipd report [--share]     报告；只有 --share 才上传，且先脱敏
