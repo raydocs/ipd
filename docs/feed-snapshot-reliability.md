@@ -12,14 +12,28 @@ GeofeedCC, GeofeedChanged, Eyeball, RTTRegion and ChangedAt, cleans text, stores
 ASN as uint32, and its duplicate sorting does not promise input-order winners.
 JSON preserves these fields, integer values, tabs/newlines, flag boundaries and
 row order. Invalid UTF-8 is rejected rather than silently replaced; non-JSON
-values such as NaN/Infinity fail encoding before publication.
+values such as NaN/Infinity fail encoding before publication. On read, the original
+serialized bytes are checked for valid UTF-8 and paired UTF-16 surrogate escapes
+before JSON decoding can replace damaged text. Literal U+FFFD, escaped U+FFFD and
+valid surrogate pairs remain valid data. A rejected selected file does not publish
+that source; this is not a checksum against arbitrary valid-JSON modifications.
 Ordinary snapshots are loaded into the existing in-memory table, not mmap.
 
 Before writing, apply checks matching source IDs, skips invalid prefixes, masks
 valid prefixes, sets row Source to the metadata ID, and rejects an empty accepted
 set. It sets Enabled=true, Rows to the number of accepted rows (including
-duplicates, matching MergeSource), and sets UpdatedAt only when it was zero.
-Existing source timestamps are preserved, not replaced with reload time.
+duplicates, matching MergeSource). UpdatedAt is preserved, including zero for an
+unknown acquisition time; neither preparation nor reload supplies the current
+time. Built-in successful feed producers supply their acquisition time themselves.
+Known source timestamps are preserved, not replaced with reload time.
+
+The standalone PR1-baseline lookup.MergeSource still fills zero UpdatedAt with
+now in its live table. This PR deliberately does not import a lookup fix: its
+serialized and parsed source timestamps stay zero, while standalone live/reloaded
+engine metadata can still become nonzero and differ. With separate PR8 `c9fcb30`,
+both live and reloaded engine timestamps remain unknown. The tagged integration
+test verifies known -> unknown -> known refreshes, including the BGP freshness
+clock; the ordinary suite does not claim to fix the legacy engine behavior.
 Duplicate normalized prefixes keep the last input record, in memory and after
 restart. Tests exercise all current Rec fields, duplicate IPv4 prefixes and IPv6.
 
@@ -65,7 +79,9 @@ same-source writer ordering, or atomic disk-plus-memory transaction. No crash or
 multiwriter stress test was performed. External code must not install a mapped
 version of an ordinary source into the supplied engine or remove/replace source
 formats behind that engine while updates are running. Supporting that ownership
-transfer would require a separate lookup API decision.
+transfer would require a separate lookup API decision. Strict read validation
+buffers the complete serialized JSON in addition to decoded rows; no snapshot
+byte/row cap or production-scale RSS/OOM guarantee is introduced here.
 
 ## Verification
 
@@ -90,3 +106,28 @@ Linux MSS and `/proc/self/maps` test failures. Live external checks must be bloc
 or skipped to obey the no-public-network requirement; these are not evidence of
 real provider availability. No real feed downloads, credentials or deployment
 are part of this verification.
+
+### R1 follow-up verification
+
+New tests were run against `eadbdfa` before fixing the two P2 findings: unknown
+timestamps were fabricated (and existing zero-time files rejected), and damaged
+UTF-8 / unpaired surrogate text was accepted and published. With the isolated
+PR8 lookup changes, the unknown-time counterexample also failed in live/reloaded
+metadata and the BGP clock. These were actual failing runs, not inferred results.
+
+`TestApplySnapshotPreservesSourceTime` and `TestLoadSnapshotUnknownTime` check
+serialized/parsed zero times and known-time preservation on the standalone branch.
+`TestLoadSnapshotStrictUnicode` checks rejection without source publication,
+unchanged input bytes/unrelated source, and valid U+FFFD/surrogate-pair controls.
+With **only the separately applied PR8 lookup changes** present, run:
+
+```
+GOPROXY=off GOTOOLCHAIN=local go test -tags pr8_integration ./internal/ingest -run '^TestApplySnapshotPR8SourceTimes$' -count=1 -v
+```
+
+The `pr8_integration` tag selects only an integration test, never production code.
+Its required lookup semantics are not present in the standalone baseline and are
+not included in this PR. Temporary PR2 platform-test and PR8 lookup patches used
+for full-suite/race verification must be reversed before committing. Evidence and
+remaining independent-review status belong in the PR report, not an acceptance
+claim based solely on these tests.

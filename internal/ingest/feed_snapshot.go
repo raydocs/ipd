@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,8 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"ipd/internal/lookup"
@@ -58,9 +59,7 @@ func prepareFeedSnapshot(id string, meta lookup.SourceMeta, rows []lookup.Source
 	// and its row count is the accepted count before duplicate collapse.
 	snap.Meta.Rows = len(snap.Rows)
 	snap.Meta.Enabled = true
-	if snap.Meta.UpdatedAt.IsZero() {
-		snap.Meta.UpdatedAt = time.Now().UTC()
-	}
+	// Unknown acquisition time stays unknown; only the producer can supply it.
 	return snap, nil
 }
 
@@ -131,13 +130,16 @@ func writeFeedSnapshot(dir string, snap feedSnapshot, files *snapshotFiles) erro
 }
 
 func readFeedSnapshot(path, id string) (feedSnapshot, error) {
-	f, err := os.Open(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return feedSnapshot{}, err
 	}
-	defer f.Close()
+	// Validate the original bytes, not strings already normalized by json.
+	if err := validateFeedJSONText(raw); err != nil {
+		return feedSnapshot{}, err
+	}
 	var snap feedSnapshot
-	dec := json.NewDecoder(f)
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(&snap); err != nil {
 		return feedSnapshot{}, err
 	}
@@ -152,9 +154,65 @@ func readFeedSnapshot(path, id string) (feedSnapshot, error) {
 	if err != nil {
 		return feedSnapshot{}, err
 	}
-	if snap.Meta.Rows != len(prepared.Rows) || !snap.Meta.Enabled || snap.Meta.UpdatedAt.IsZero() || len(snap.Rows) != len(prepared.Rows) {
+	if snap.Meta.Rows != len(prepared.Rows) || !snap.Meta.Enabled || len(snap.Rows) != len(prepared.Rows) {
 		return feedSnapshot{}, fmt.Errorf("invalid feed snapshot metadata or rows")
 	}
 	// Read normalization matches publication, without refreshing source timestamps.
 	return prepared, nil
+}
+
+// validateFeedJSONText rejects Unicode damage that encoding/json would silently
+// replace with U+FFFD. JSON syntax is still checked by the decoder afterward.
+func validateFeedJSONText(raw []byte) error {
+	if !utf8.Valid(raw) {
+		return fmt.Errorf("feed snapshot contains invalid UTF-8")
+	}
+	inString := false
+	for i := 0; i < len(raw); i++ {
+		switch raw[i] {
+		case '"':
+			inString = !inString
+		case '\\':
+			if !inString {
+				continue
+			}
+			i++ // Skip an escaped quote/backslash without changing string state.
+			if i >= len(raw) {
+				return fmt.Errorf("incomplete feed snapshot string escape")
+			}
+			if raw[i] != 'u' {
+				continue
+			}
+			unit, err := feedJSONCodeUnit(raw[i+1:])
+			if err != nil {
+				return err
+			}
+			i += 4
+			switch {
+			case unit >= 0xd800 && unit <= 0xdbff:
+				if i+6 >= len(raw) || raw[i+1] != '\\' || raw[i+2] != 'u' {
+					return fmt.Errorf("unpaired high surrogate in feed snapshot")
+				}
+				low, err := feedJSONCodeUnit(raw[i+3:])
+				if err != nil || low < 0xdc00 || low > 0xdfff {
+					return fmt.Errorf("unpaired high surrogate in feed snapshot")
+				}
+				i += 6
+			case unit >= 0xdc00 && unit <= 0xdfff:
+				return fmt.Errorf("unpaired low surrogate in feed snapshot")
+			}
+		}
+	}
+	return nil
+}
+
+func feedJSONCodeUnit(raw []byte) (uint64, error) {
+	if len(raw) < 4 {
+		return 0, fmt.Errorf("incomplete feed snapshot Unicode escape")
+	}
+	unit, err := strconv.ParseUint(string(raw[:4]), 16, 16)
+	if err != nil {
+		return 0, fmt.Errorf("invalid feed snapshot Unicode escape: %w", err)
+	}
+	return unit, nil
 }
