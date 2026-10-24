@@ -77,4 +77,6 @@ boundary. Its one-line text rendering uses the same intact prefix. Structured
 with deterministic provider/HTTP fixtures, not public network probes. It checks
 all options above, omitted/zero/nullable-array defaults, schema disclosure,
 rejection before probes or watch writes, HTTP guard precedence and CLI hints,
-supported argument forwarding, and ASCII/Chinese/emoji summary boundaries.
+supported argument forwarding, and intact UTF-8 summaries over MCP. Same-package
+`toOut` tests supply `app.Report` fixtures directly to verify exact longest-prefix
+boundaries for ASCII/Chinese/emoji, independent of any tool's business wording.

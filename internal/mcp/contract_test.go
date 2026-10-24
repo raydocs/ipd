@@ -299,23 +299,17 @@ func TestSupportedOptionsStillForwarded(t *testing.T) {
 	}
 }
 
-func TestSummaryUTF8(t *testing.T) {
+func TestSummaryUTF8OverMCP(t *testing.T) {
 	cs, service, _, _ := contractClient(t, ipdmcp.ModeStdio)
 	for _, tail := range []string{"short中文🙂", strings.Repeat("a", 800), strings.Repeat("中", 220), "a" + strings.Repeat("中文", 120), strings.Repeat("🙂", 180)} {
 		t.Run(fmt.Sprintf("bytes=%d", len(tail)), func(t *testing.T) {
 			service.Tracer = func(context.Context, string) ([]route.Hop, error) { return nil, errors.New(tail) }
-			original := "回程 traceroute 没有拿到跳数：" + tail
 			res := callContract(t, cs, "route_return", map[string]any{})
 			out := contractOut(t, res)
-			want := ""
-			for _, r := range original {
-				if len(want)+utf8.RuneLen(r) > 600 {
-					break
-				}
-				want += string(r)
-			}
-			if !utf8.ValidString(out.SummaryMD) || len(out.SummaryMD) > 600 || out.SummaryMD != want {
-				t.Errorf("summary must be the longest valid UTF-8 prefix <=600 bytes; got %d bytes, want %d", len(out.SummaryMD), len(want))
+			// Route wording belongs to the app. This test covers the wire contract;
+			// exact truncation of controlled reports is checked by TestToOutSummaryUTF8.
+			if out.SummaryMD == "" || !utf8.ValidString(out.SummaryMD) || len(out.SummaryMD) > 600 || strings.Contains(out.SummaryMD, "\ufffd") {
+				t.Errorf("MCP summary must be non-empty, intact UTF-8 within 600 bytes; got %q", out.SummaryMD)
 			}
 			if !utf8.ValidString(contractText(res)) || strings.Contains(contractText(res), "\ufffd") {
 				t.Error("short text contains damaged UTF-8")
