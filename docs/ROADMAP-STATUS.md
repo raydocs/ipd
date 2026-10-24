@@ -21,13 +21,29 @@
 | 1 | P1 | [#2 跨平台测试](https://github.com/raydocs/ipd/pull/2) | 通过 `0511d997`；macOS 不再要求 Linux procfs/TCP_INFO，Linux 原断言保留 |
 | 1 | P1 | [#3 Clash 重命名引用](https://github.com/raydocs/ipd/pull/3) | 通过 `7183dae`；组、直接规则、子规则及适用拨号引用一致；碰撞后结果名称与 YAML 一致 |
 | 1 | P1 | [#4 解锁证据与弃权](https://github.com/raydocs/ipd/pull/4) | 通过 `3f2b012`；改版、挑战页、空响应和部分请求失败弃权，不保证实际登录/播放 |
-| 1 | P1 | [#5 去程/回程证据](https://github.com/raydocs/ipd/pull/5) | 主修复通过 `2eda873`，独立审查为 approve-with-fixes；既有 ICMP 关联 P2 未解决，见下文 |
+| 1 | P1 | [#5 去程/回程证据](https://github.com/raydocs/ipd/pull/5) | 主修复通过 `2eda873`，首轮保留的 ICMP 关联缺口由第五轮 #13 处理；单独采用 #5 不包含该后续修复 |
 | 2 | P1 | [#6 MCP 参数契约](https://github.com/raydocs/ipd/pull/6) | 通过 `6a24913`；13 组不支持的非默认参数明确拒绝，短摘要保持合法 UTF-8 |
 | 2 | P1 | [#7 AI 诊断及修复顺序](https://github.com/raydocs/ipd/pull/7) | 通过 `a4cfde6`；未知不报 safe，按稳定优先级给检查建议，不把账号封禁归因于 IP |
 | 2 | P1 | [#8 数据替换与新鲜度](https://github.com/raydocs/ipd/pull/8) | 通过 `c9fcb30`；并发/mmap 生命周期审查通过，disabled 源时钟修复已复测 |
 | 3 | P2 | [#9 本地延迟 SVG 卡片](https://github.com/raydocs/ipd/pull/9) | 通过 `67e87d4`；原始错误不进入 SVG，文件清理竞态已修，第二轮独立安全审查 approve |
 | 3 | P1 | [#10 节点测量未知态](https://github.com/raydocs/ipd/pull/10) | 通过 `9035290`；未配置实测能力时 abstain，不伪造整批 unreachable 或导出订阅凭据 |
 | 4 | P2 | [#11 英文 CLI 展示](https://github.com/raydocs/ipd/pull/11) | 通过 `c5e4e25`；默认中文兼容，英文选项不翻译机器字段或原始证据 |
+| 5 | P2 | [#13 Raw traceroute 报文关联](https://github.com/raydocs/ipd/pull/13) | 通过 `542e27b`；关联当前探针并修复 ICMP socket 包装 panic，第二轮独立审查 approve |
+| 5 | P2 | [#14 HTTP OpenAPI 契约](https://github.com/raydocs/ipd/pull/14) | 通过 `c173c78`；参数、媒体与同步 job 语义补齐；nullable/MCP 400 返修后第二轮独立审查 approve |
+| 5 | P1 | [#15 远程订阅安全读取](https://github.com/raydocs/ipd/pull/15) | 通过 `11b7e23`；独立安全审查 approve；全地址校验、每跳验证、固定地址连接与严格限额 |
+
+## 第五轮重新评估与取舍
+
+2026-10-24 核对的竞品公开说明：
+[IPLark](https://iplark.com/check) 展示质量、代理、评分与标签；
+[IPPure](https://ippure.com/en/about) 描述地理、风险、指纹与 VPN 泄漏的一站式工具；
+[ip.cx DNS 检测](https://ip.cx/dnsleak) 描述一次性随机域名与权威侧递归解析器观测。
+这是公开功能说明，不是准确率、性能或隐私承诺的独立实测，也未提交页面显示的访客地址。
+
+ipd 的主要差距仍是可信实际采集与开箱可用性，而非仅少一个分数。
+真实 Clash 通道、权威 DNS 观测需要后续实现与受控运行证据；本轮不以 mock 冒充这些能力。
+优先选择本地可验证的安全读取、线路证据准确性及 agent HTTP 契约：
+先守住批量输入安全边界，再防止无关报文误判线路，最后减少 agent 猜测参数/返回形状。
 
 ## 验收证据与发现后返修
 
@@ -54,12 +70,16 @@ Linux CI 的通过与本地真实 raw-socket 测量不是一回事；没有执�
 go test -count=1 ./...
 node --test web/judge.test.mjs
 go test -race -count=1 ./internal/cli ./internal/app ./internal/lookup \
-  ./internal/mcp ./internal/nodes ./internal/probe ./internal/route
+  ./internal/mcp ./internal/nodes ./internal/probe ./internal/route ./internal/api
 go build ./cmd/ipd
+GOOS=linux GOARCH=amd64 go test -c ./internal/route -o /tmp/ipd-route-linux.test
 ```
 
 另外实跑英文帮助、英文 JSON 本地报告、离线 SVG 导出：离线导出保持 `abstain` / 退出码 `10`，
 并不因成功保存文件变成“网络正常”。以上组合仅用于本地验收，未推送或合并成产品分支。
+第五轮加入 #13–#15 后重新运行完整无缓存命令与上述八个包的 race、构建和 Linux route
+交叉编译，全部通过。#13/#14 各经两轮、#15 经一轮独立新上下文审查后验收；
+没有执行真实 Linux raw socket、生产订阅站点或账号测试。
 
 总控实际发现并退回修复的缺口：
 
@@ -70,6 +90,10 @@ go build ./cmd/ipd
 - #9：XML 转义不等于隐私脱敏；分享卡片不得直接包含可能带凭据的 provider 错误。
   独立安全审查另实际复现导出失败后按路径清理会误删替换文件，要求安全发布/清理回归。
   修复后只操作原文件描述符、不按路径删除；可能保留空/部分文件，导出并非原子发布。
+- #13：独立审查复现既有 `ipv4.NewPacketConn(*icmp.PacketConn)` panic，导致关联逻辑无法执行；
+  改用连接自有 IPv4 accessor，并用无 socket 的同一生产 adapter 回归验证错误路径。
+- #14：组合复测发现空 target 的旧行为假设及 nullable RTT/loss 不符；独立审查还复现
+  无观测 lookup 的 `disagreements:null` 和 MCP JSON-RPC 400 媒体缺失；返修与反证均通过。
 
 ## 剩余问题，按用户影响排序
 
@@ -78,8 +102,9 @@ go build ./cmd/ipd
 1. **Clash 真实批量测量仍未接通。** #3 修复导出，#10 修复误报，但默认路径仍不会启动
    mihomo、分配逐节点通道或实测出口/AI 解锁。需要独立 runner/checker 集成、取消与清理、
    凭据隔离测试；不能因安装了外部二进制就宣称功能可用。
-2. **网络目标及远程订阅安全边界需专项审查。** 域名解析、重定向、私网/metadata 防护，
-   webhook/watch 的权限与外连边界，以及订阅导出的秘密处理，都不能由通用错误脱敏替代。
+2. **其余网络目标及写入安全边界仍需专项审查。** #15 仅闭合远程订阅读取的地址校验、
+   重定向和 DNS 固定连接边界，不是全产品 SSRF 认证；其他探测入口、webhook/watch 权限及外连、
+   完整订阅导出的秘密处理仍需审查。其静态 IANA 策略需维护，配置代理会明确拒绝而非绕过固定连接。
 3. **生产规模数据证据不足。** 完整线上数据的体积、来源许可、更新失败可观测性与 last-good
    保留需验证；#1 的 400,001 行合成快照性能不是生产文件实测。小型住宅留出集也不是大规模精度证明。
 4. **账号诊断的缺测仍需真正的采集实现。** 默认 DNS 观测及部分 egress/双栈输入不足；
@@ -87,16 +112,16 @@ go build ./cmd/ipd
 
 ### P2
 
-1. **Linux ICMP 探针关联。** #5 第二轮独立审查发现既有 `trace_linux.go` 路径未完整关联
-   探针 ID/序号或引用报文，无关 EchoReply 可能被误判为完成。已写入 PR 描述，未解决，
-   不能当成真实网络认证；后续需要报文级回归与受控 Linux 验证。
+1. **受控 Linux 路由运行验证。** #13 已用跨平台报文夹具处理 #5 遗留的探针关联缺口，
+   并修复阻断 ICMP 路径的包装 panic；仍未实跑 raw socket/TTL/收发。ICMP 没有认证，
+   最小引用只提供有限标识，不能防止已观察当前标识者伪造回复，不能当成真实网络认证。
 2. **解锁正向规则覆盖与巡检。** 未识别模板保守弃权；继续扩充可复核录制夹具、改版 canary，
    明确页面可达与真实登录/播放/模型调用的区别。
 3. **英文覆盖边界。** CLI 展示不等于 HTTP/MCP/Web 全面本地化；原始来源证据应保留原文。
 4. **分享体验。** 本地 SVG 不是公开托管；分享保持显式选择。浏览器下载、布局/长文本视觉检查、
    进一步隐私预览和无障碍验证仍有空间。
-5. **协议文档完整度。** OpenAPI 参数、请求体、错误、异步/同步语义与能力边界应继续对照实现补齐，
-   不应仅靠结构性 lint 视为完整。
+5. **协议持续一致性。** #14 已补齐 HTTP 参数、请求体、错误、同步 job 和能力边界，并有本地 wire
+   回归；仍不是完整 OpenAPI/MCP 认证，后续业务变动须同步 schema、媒体及 nullable 回归。
 
 ## 采用建议
 
@@ -108,6 +133,11 @@ go build ./cmd/ipd
 只关闭原 fd、不按路径删除，以及空/部分文件警告；不能为翻译恢复旧清理逻辑。
 总控的临时组合按此整合，并非直接把并列 PR 无条件拼接。汇总 PR 本身仅含本文，
 没有发布组合实现或替任何单项 PR 完成合并。
+
+#13 与 #5 的 raw trace 修改重叠：按 `docs/route-probe-correlation.md` 保留 #5 的
+`platformTrace`/UDP 接收及错误处理，采用 #13 的 ICMP/TCP 段、adapter 和 portable parser。
+#15 与 #10 的 `nodes.go` 重叠：仅移走旧 reader/imports、加入新安全 reader，保留 #10 的默认
+测量弃权，不可整文件覆盖。第五轮总控组合已按这两条逐段整合，#14 使用返修后的契约版本。
 
 先审阅独立 PR，再在候选组合上运行完整两套测试与相关 race 检查；不要把本清单视为合并授权。
 留意 #7 的 nullable 布尔字段、#5 更保守的线路等级、#6 显式拒绝参数、#10 默认弃权等兼容性变化。
