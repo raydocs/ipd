@@ -28,6 +28,8 @@ var (
 	ErrRunnerExit       = errors.New("runner process exited")
 	ErrRunnerReadiness  = errors.New("runner listener readiness timed out")
 	ErrRunnerStorage    = errors.New("runner private storage unavailable")
+	ErrRunnerCleanup    = errors.New("runner private cleanup incomplete; retained resources require local attention")
+	ErrRunnerOwnership  = errors.New("runner listener ownership could not be verified")
 )
 
 // Endpoint contains credential-bearing URLs. Never log or expose them publicly.
@@ -159,13 +161,20 @@ func (m *ExecRunner) start(ctx context.Context, load func() ([]byte, error)) (ma
 	}
 	if err := r.ctx.Err(); err != nil {
 		<-r.done
+		r.mu.RLock()
+		terminal := r.err
+		r.mu.RUnlock()
+		if terminal != nil {
+			return nil, terminal
+		}
 		return nil, err
 	}
 	return result.socks, nil
 }
 
 // Stop cancels startup or an active batch, reaps every child, and waits until
-// owned storage is removed. Concurrent/repeated Stop calls are safe.
+// owned storage cleanup has been attempted. Inspect Err for cleanup failure.
+// Concurrent/repeated Stop calls are safe.
 func (m *ExecRunner) Stop() {
 	m.mu.Lock()
 	r := m.run
@@ -219,7 +228,7 @@ func (m *ExecRunner) Err() error {
 	return r.err
 }
 
-func (r *execRun) execute(bin, root string, requested Backend, executables map[Backend]string, startup time.Duration, load func() ([]byte, error)) error {
+func (r *execRun) execute(bin, root string, requested Backend, executables map[Backend]string, startup time.Duration, load func() ([]byte, error)) (resultErr error) {
 	if err := r.ctx.Err(); err != nil {
 		return err
 	}
@@ -234,6 +243,9 @@ func (r *execRun) execute(bin, root string, requested Backend, executables map[B
 	r.mu.Lock()
 	r.backend = driver.ID()
 	r.mu.Unlock()
+	if err := runnerOwnershipAvailable(); err != nil {
+		return err
+	}
 	if executables != nil {
 		bin = executables[driver.ID()]
 	}
@@ -255,7 +267,11 @@ func (r *execRun) execute(bin, root string, requested Backend, executables map[B
 		return ErrRunnerStorage
 	}
 	// Only remove the fresh private directory, never the input or TempRoot.
-	defer os.RemoveAll(dir)
+	defer func() {
+		if os.RemoveAll(dir) != nil {
+			resultErr = errors.Join(resultErr, ErrRunnerStorage, ErrRunnerCleanup)
+		}
+	}()
 	var processes []coreProcess
 	defer func() {
 		for _, p := range processes {
@@ -305,7 +321,7 @@ func (r *execRun) execute(bin, root string, requested Backend, executables map[B
 		// inherit any variables, proxy settings, credentials, loader or Go hooks.
 		cmd.Env = []string{"HOME=" + nodeDir, "TMPDIR=" + nodeDir}
 		// Nil stdout/stderr go to the null device; raw core errors can contain secrets.
-		reservation.Close() // core cannot inherit this socket; authenticate ownership below.
+		reservation.Close() // no socket inheritance; kernel ownership is required below.
 		if cmd.Start() != nil {
 			return ErrRunnerStartup
 		}
@@ -313,7 +329,7 @@ func (r *execRun) execute(bin, root string, requested Backend, executables map[B
 		processes = append(processes, p)
 		go func() { _ = p.cmd.Wait(); close(p.done); exits <- struct{}{} }()
 		addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-		if err := waitRunnerReady(startupCtx, r.ctx, addr, user, password, exits); err != nil {
+		if err := waitRunnerReady(startupCtx, r.ctx, addr, user, password, p, exits); err != nil {
 			return err
 		}
 		credentials := url.UserPassword(user, password)
@@ -326,6 +342,17 @@ func (r *execRun) execute(bin, root string, requested Backend, executables map[B
 	case <-r.ctx.Done():
 		return r.ctx.Err()
 	default:
+	}
+	// Recheck every live child's listener immediately before publishing the batch.
+	for i, p := range processes {
+		u, _ := url.Parse(endpoints[names[i]].SOCKS)
+		port, _ := strconv.Atoi(u.Port())
+		if err := runnerRequireOwner(startupCtx, p, port); err != nil {
+			if startupCtx.Err() != nil {
+				return readinessError(r.ctx)
+			}
+			return err
+		}
 	}
 	r.mu.Lock()
 	r.endpoints = endpoints
@@ -345,7 +372,9 @@ func readinessError(lifetime context.Context) error {
 	}
 	return ErrRunnerReadiness
 }
-func waitRunnerReady(ctx, lifetime context.Context, addr, user, password string, exits <-chan struct{}) error {
+func waitRunnerReady(ctx, lifetime context.Context, addr, user, password string, child coreProcess, exits <-chan struct{}) error {
+	_, portText, _ := net.SplitHostPort(addr)
+	port, _ := strconv.Atoi(portText)
 	timer := time.NewTicker(20 * time.Millisecond)
 	defer timer.Stop()
 	for {
@@ -356,8 +385,32 @@ func waitRunnerReady(ctx, lifetime context.Context, addr, user, password string,
 			return readinessError(lifetime)
 		default:
 		}
-		if probeRunnerSOCKS(ctx, addr, user, password) == nil && probeRunnerHTTP(ctx, addr) == nil {
-			return nil
+		owned, err := runnerOwnsListener(ctx, child.cmd.Process.Pid, port)
+		if ctx.Err() != nil {
+			return readinessError(lifetime)
+		}
+		select {
+		case <-child.done:
+			return ErrRunnerExit
+		default:
+		}
+		if err != nil {
+			return err
+		}
+		if owned {
+			if err := runnerRequireOwner(ctx, child, port); err != nil {
+				if ctx.Err() != nil {
+					return readinessError(lifetime)
+				}
+				return err
+			}
+			if probeRunnerSOCKS(ctx, addr, user, password) == nil && probeRunnerHTTP(ctx, addr) == nil {
+				err := runnerRequireOwner(ctx, child, port)
+				if ctx.Err() != nil {
+					return readinessError(lifetime)
+				}
+				return err
+			}
 		}
 		select {
 		case <-exits:
@@ -367,6 +420,33 @@ func waitRunnerReady(ctx, lifetime context.Context, addr, user, password string,
 		case <-timer.C:
 		}
 	}
+}
+
+func runnerRequireOwner(ctx context.Context, child coreProcess, port int) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	select {
+	case <-child.done:
+		return ErrRunnerExit
+	default:
+	}
+	owned, err := runnerOwnsListener(ctx, child.cmd.Process.Pid, port)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	select {
+	case <-child.done:
+		return ErrRunnerExit
+	default:
+	}
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return ErrRunnerOwnership
+	}
+	return nil
 }
 
 func runnerProbeConn(ctx context.Context, addr string) (net.Conn, error) {
@@ -383,8 +463,8 @@ func runnerProbeConn(ctx context.Context, addr string) (net.Conn, error) {
 }
 
 // Readiness never sends a target CONNECT and never makes an upstream request.
-// Random per-process credentials prevent a port-reuse race becoming cross-node
-// traffic. A collision fails closed; it is not retried against another node.
+// These are protocol/authentication checks only, NOT proof of server identity.
+// Kernel ownership must be established independently before probing/publishing.
 func probeRunnerSOCKS(ctx context.Context, addr, user, password string) error {
 	c, err := runnerProbeConn(ctx, addr)
 	if err != nil {
@@ -422,7 +502,7 @@ func probeRunnerHTTP(ctx context.Context, addr string) error {
 	}
 	defer c.Close()
 	// No credentials: both cores return 407 before routing any request.
-	// SOCKS on this same mixed socket already proved random-token ownership.
+	// Listener ownership is established separately through kernel evidence.
 	req := "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
 	if _, err = io.WriteString(c, req); err != nil {
 		return err

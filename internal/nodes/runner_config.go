@@ -190,6 +190,9 @@ func runnerProxies(data []byte) ([]map[string]any, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := runnerGlobals(doc, "proxies"); err != nil {
+		return nil, nil, err
+	}
 	raw, ok := doc["proxies"].([]any)
 	if !ok || len(raw) == 0 || len(raw) > maxRunnerNodes {
 		return nil, nil, ErrRunnerConfig

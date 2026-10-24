@@ -81,7 +81,7 @@ Runner-supported subsets (not claims of successful core handshakes):
   from an accepted node. Node names/tags alone are replaced by `ipd-node` inside
   each private configuration; external result identities keep their original value.
 - WireGuard endpoint/system-interface lifecycle and ShadowTLS/other multi-outbound
-  graphs remain unsupported here. Nonempty sing-box `endpoints` fail explicitly;
+  graphs remain unsupported here. Any sing-box `endpoints` key fails explicitly;
   detours never become direct connections. Advanced protocol expansion and safe
   cross-format conversion are follow-up work, not a negative core-capability claim.
 
@@ -97,11 +97,16 @@ including ignored globals, extra documents and malformed input. Both have a
 in 1–65535. The compatibility `Parse` API remains permissive for old non-runner
 callers but retains an unsafe-input bit checked by `StartFile`.
 
-Only approved node fields reach a fresh generated config. Caller global config,
-controllers/UIs, inbounds, providers, rules/rule sets, scripts, DNS listeners,
-experimental APIs, tun and caches do not reach the core. Core/system DNS defaults
-are used; caller custom global DNS/cert/route policy is not imported. This checks
-individual node outbounds, not the semantics of a user's whole routing document.
+Only approved node fields reach a fresh generated config. Top-level input uses a
+closed allowlist: `proxies` (mihomo) or `outbounds` (sing-box), plus optional
+runner-owned `metadata: {name: string, description: string}` for presentation only.
+Unknown metadata fields and **all other globals**, even empty/default-looking
+values, return `ErrRunnerUnsupported` before any child or network probe. This
+includes certificate/trust stores and paths, interfaces/marks, hosts/DNS, rules,
+controllers/UIs, inbounds, providers, scripts, experimental APIs, tun and caches.
+They are not silently discarded into changed trust/address/route defaults. Whole
+routing documents therefore need a separately reviewed extraction/conversion
+step; this runner checks only self-contained individual node outbounds.
 
 Each node gets its own process, directory (0700), config (0600), random listener
 password and TCP mixed SOCKS/HTTP listener on `127.0.0.1`. mihomo's listener `proxy`
@@ -110,12 +115,34 @@ an explicit route `final` pointing at `ipd-node`; no DIRECT outbound exists.
 Listener UDP is not enabled; this increment does not verify UDP forwarding.
 
 A loopback ephemeral port is reserved until immediately before core launch.
-Neither core accepts a portable inherited socket here, so a bind race remains;
-readiness requires SOCKS5 random-token authentication and an HTTP 407 response
-on the same mixed socket, not just an open TCP port. A foreign listener/port
-collision fails closed, with no retry/fallback. Readiness performs no CONNECT
-or upstream measurement. Credentials in endpoint URLs are secrets: do not log,
-serialize to public UI, or expose them in error messages.
+Neither core accepts a portable inherited socket here, so a bind race remains.
+**SOCKS credential acceptance is client authentication, not server identity.**
+Kernel evidence must establish the listening socket's child ownership before any
+protocol/authentication probe, after readiness, and again for the entire batch
+immediately before endpoints are published:
+
+- Darwin requires the existing, root-owned non-writable-by-group/others system
+  `/usr/sbin/lsof`, fixed argv, no inherited environment and NUL-delimited fields.
+  Query all TCP LISTEN records at the port (no PID/address-family filter hiding
+  competitors). Require exactly one IPv4 `127.0.0.1:port` fd with the launched PID
+  and this runner's parent PID. Missing fields, warnings, query failure, foreign,
+  wildcard, IPv6 or multiple listeners fail closed. `-nP` disables name lookups.
+- Linux requires readable `/proc/self/net/tcp{,6}`, the child's fd symlinks/stat,
+  and matching network namespaces. Require one LISTEN record at the port across
+  both tables, the exact IPv4 loopback address, and its inode in the live direct
+  child's fd set. Foreign/ambiguous records, unreadable evidence or namespace
+  differences fail closed. A dead/reused PID is not accepted as a live child.
+- Other platforms, unavailable tools or restricted kernel visibility return
+  unsupported without endpoints; there is no protocol-only ownership fallback.
+
+SOCKS5 random-token authentication and an HTTP 407 then check protocol readiness
+only. A collision fails closed with no retry/fallback, CONNECT or upstream
+measurement. Kernel checks attest ownership at those instants; URLs are not
+perpetual capabilities and become invalid after child teardown. Trusted binaries
+must not delegate/inherit their listening fd to other processes or deliberately
+change listeners; same-user process tampering is outside this trusted-core model.
+Credentials in endpoint URLs are secrets: do not log, serialize to public UI,
+or expose them in error messages.
 
 Absolute executable paths use `exec.CommandContext` with fixed argv and no shell.
 The child receives only private `HOME` and `TMPDIR` values, not CLASH overrides,
@@ -127,8 +154,15 @@ Startup has a whole-batch listener deadline (default 10s); `Budget` bounds the
 whole process lifetime including startup (default 3m), and the caller context
 can shorten it. Any child exit revokes the batch and kills/reaps its peers.
 `Stop` is concurrent-safe/idempotent, cancels pending startup and waits for every
-child's `Wait` and owned-directory cleanup. `Err()` reports sanitized terminal
-state (`context.Canceled` for an ordinary explicit Stop). A runner can restart
+child's `Wait` and the owned-directory cleanup attempt. If removal fails,
+`Err()` joins `ErrRunnerStorage` and `ErrRunnerCleanup` with the original terminal
+error; `errors.Is(err, context.Canceled)` remains true for cancellation. No raw
+filesystem error/path/config is returned. A retained private directory requires
+manual local attention under the trusted `TempRoot` (or system temp directory);
+do not blindly remove another session's private directories. Check retained state
+only after confirming all owned children are reaped; repeated Stop preserves the
+warning rather than claiming successful cleanup. `Err()` otherwise reports
+`context.Canceled` for an ordinary explicit Stop. A runner can restart
 after teardown, but another active Start is rejected. Retained endpoint URLs
 are invalid after teardown. Only the newly created owned directory is removed;
 source files, unrelated siblings and symlink targets are never deleted.
@@ -190,8 +224,35 @@ Wait/reaping, restart and ownership-limited cleanup. They do **not** emulate any
 protocol encryption, TLS handshake, UDP upstream, core feature flags or real
 mihomo/sing-box configuration acceptance. Neither real core is installed/tested.
 
-Final integrated check results are recorded in the PR. Draft only; independent
-security/concurrency/routing review has not been performed in this no-delegation
-task, and no merge/deployment is authorized. Subsequent app/checker/JSON document
+Final integrated check results are recorded in the PR. Independent r1 review
+blocked the prior head on listener identity, global-policy semantics and silent
+cleanup failure. This revision addresses those findings with actual before/after
+overlay evidence; it remains Draft and requires the parent's independent r2,
+not author self-acceptance. No merge/deployment is authorized. Subsequent app/checker/JSON document
 integration, safe conversions, exit-IP/route evidence, purity/scoring and unlock
 measurement remain separate work.
+
+### Review r1 regression evidence
+
+The supplied overlay was run unchanged against `ebd6b242d76abfe335a01accb25c07781c63b589`
+before edits: both permissive foreign listeners were published, four required
+global policies were lost, and real permission-denied cleanup reported only
+cancellation. The command exited 1. The same overlay after correction exited 0.
+Owned evidence: `/tmp/ipd-pr23-r1-fix.v8tNE4/{before.txt,after-overlay.txt}`.
+
+New checked-in tests cover both backends with an accept-any SOCKS/HTTP impostor
+(no credentials/protocol bytes sent to it), a persistent task-owned helper
+launch audit for zero-process/zero-probe global-policy rejection, and actual
+non-root OS permission-denied cleanup retaining a private config copy. These are
+not mocks of the ownership query or filesystem error. The permission test requires
+real mode enforcement/non-root execution; it fails honestly rather than skipping
+if the environment bypasses those permissions.
+
+Darwin's system lsof path is exercised by real subprocess fixtures locally.
+Linux proc parsers are locally unit-tested and the Linux target is compile-checked;
+Linux kernel/runtime ownership behavior still requires the Linux CI/r2 run, not a
+claim inferred from cross-compilation. Official kernel [TCP proc fields](https://docs.kernel.org/networking/proc_net_tcp.html)
+and [proc fd/stat documentation](https://www.kernel.org/doc/Documentation/filesystems/proc.txt),
+and [lsof machine-output documentation](https://github.com/lsof-org/lsof/blob/master/Lsof.8)
+were checked for the ownership implementation. No core or new system binary was
+installed, and no protocol-only fallback is used when this evidence is unavailable.

@@ -25,7 +25,7 @@ func backendFixtureInput(backend Backend, mode string) string {
 }
 
 func TestSingBoxRunnerIsolationAndConfiguration(t *testing.T) {
-	text := `{"log":{"output":"/do-not-write"},"experimental":{"clash_api":{"external_controller":"0.0.0.0:9090"}},"route":{"final":"direct","rule_set":[{"type":"remote","url":"https://do-not-fetch.invalid"}]},"inbounds":[{"type":"tun","auto_route":true}],"outbounds":[
+	text := `{"metadata":{"name":"public-fixture","description":"display-only"},"outbounds":[
  {"tag":"ss","type":"shadowsocks","server":"ss.invalid","server_port":443,"method":"aes-128-gcm","password":"public-fixture"},
  {"tag":"vl","type":"vless","server":"vl.invalid","server_port":443,"uuid":"00000000-0000-4000-8000-000000000000","flow":"xtls-rprx-vision","tls":{"enabled":true,"server_name":"example.invalid","utls":{"enabled":true,"fingerprint":"chrome"},"reality":{"enabled":true,"public_key":"public-fixture","short_id":"abcd"}}},
  {"tag":"vm","type":"vmess","server":"vm.invalid","server_port":443,"uuid":"00000000-0000-4000-8000-000000000000","security":"auto","alter_id":0,"transport":{"type":"ws","path":"/fixture","headers":{"Host":"example.invalid"}}},
@@ -268,7 +268,7 @@ func TestRunnerActualPortCollisionFailsClosed(t *testing.T) {
 					c.Close()
 				}
 			}()
-			if err := <-result; !errors.Is(err, ErrRunnerExit) {
+			if err := <-result; !errors.Is(err, ErrRunnerOwnership) {
 				t.Fatalf("collision must fail without another backend/port: %v", err)
 			}
 			if m.Endpoints() != nil {

@@ -21,6 +21,18 @@ import (
 )
 
 func main() {
+	// Task-owned persistent launch audit, outside the runner-owned tempdir, lets
+	// rejection tests prove no subprocess was spawned and then merely cleaned up.
+	audit, err := os.OpenFile(filepath.Join(filepath.Dir(os.Args[0]), "fixture-starts"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		os.Exit(37)
+	}
+	_, err = audit.WriteString("start\n")
+	audit.Close()
+	if err != nil {
+		os.Exit(38)
+	}
+
 	dir := flag.String("d", "", "home")
 	file := flag.String("f", "", "config")
 	validate := flag.Bool("t", false, "validate only")

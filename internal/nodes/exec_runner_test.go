@@ -215,14 +215,7 @@ func TestExecRunnerFiveProtocolsAndIsolation(t *testing.T) {
 	for _, k := range []string{"CLASH_OVERRIDE_EXTERNAL_CONTROLLER", "CLASH_OVERRIDE_RUN_SCRIPT", "CLASH_CONFIG_STRING", "HTTP_PROXY", "LD_PRELOAD"} {
 		t.Setenv(k, "hostile-public-fixture")
 	}
-	text := `mixed-port: 1
-external-controller: 0.0.0.0:9090
-external-ui: /do-not-read
-proxy-providers: {unsafe: {type: http, url: 'https://do-not-fetch.invalid'}}
-rules: ['MATCH,DIRECT']
-run-script: {post-up: 'do-not-execute'}
-dns: {enable: true, listen: '0.0.0.0:53'}
-tun: {enable: true}
+	text := `metadata: {name: public-fixture, description: display-only}
 proxies:
  - {name: vl, type: vless, server: vl.invalid, port: 443, uuid: 00000000-0000-4000-8000-000000000000, tls: true, flow: xtls-rprx-vision, servername: example.invalid, client-fingerprint: chrome, reality-opts: {public-key: public-fixture, short-id: abcd}}
  - {name: vm, type: vmess, server: vm.invalid, port: 443, uuid: 00000000-0000-4000-8000-000000000000, alterId: 0, cipher: auto, network: ws, ws-opts: {path: /fixture, headers: {Host: example.invalid}, max-early-data: 1024, early-data-header-name: Sec-WebSocket-Protocol}}

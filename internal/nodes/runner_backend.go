@@ -250,12 +250,8 @@ func singBoxProxies(data []byte) ([]map[string]any, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	// Endpoint/chain graphs need their own isolation design, not silent dropping.
-	if endpoints, ok := doc["endpoints"]; ok {
-		items, ok := endpoints.([]any)
-		if !ok || len(items) > 0 {
-			return nil, nil, ErrRunnerUnsupported
-		}
+	if err := runnerGlobals(doc, "outbounds"); err != nil {
+		return nil, nil, err
 	}
 	raw, ok := doc["outbounds"].([]any)
 	if !ok || len(raw) == 0 || len(raw) > maxRunnerNodes {

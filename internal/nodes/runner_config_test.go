@@ -42,7 +42,7 @@ func TestRunnerRejectsOriginalYAMLKeysAndAliases(t *testing.T) {
 		assertRootClean(t, root)
 	}
 	// Anchor declarations alone do not alias data and need not be refused.
-	if _, _, err := runnerProxies([]byte(prefix + "global: &x {a: b}")); err != nil {
+	if _, _, err := runnerProxies([]byte(prefix + "metadata: &x {name: display-only}")); err != nil {
 		t.Fatal(err)
 	}
 }
