@@ -20,10 +20,11 @@ var englishMessages = map[string]string{
 	"本地报告（未上传）":                 "Local report (not uploaded)",
 	"一站式：%s。AI %s，解锁 %s，DNS %s": "Combined: %s. AI %s, unlocking %s, DNS %s",
 	// PR9 templates are registered without enabling its command or SVG code.
-	latencyUsageZH:                    latencyUsageEN,
-	"--svg 只能指定一次":                    "--svg may only be specified once",
-	"--svg 需要本地文件路径":                  "--svg requires a local file path",
-	"未知 latency 参数 %s\n%s":            "Unknown latency argument %s\n%s",
+	latencyUsageZH:         latencyUsageEN,
+	"--svg 只能指定一次":         "--svg may only be specified once",
+	"--svg 需要本地文件路径":       "--svg requires a local file path",
+	"未知 latency 参数 %s\n%s": "Unknown latency argument %s\n%s",
+	"保存 SVG: %w; empty/partial export may remain (no path cleanup attempted)": "Save SVG: %w; empty/partial export may remain (no path cleanup attempted)",
 	"保存 SVG: %w":                      "Save SVG: %w",
 	"latency 响应缺少 SVG":                "Latency response is missing SVG",
 	"用法：ipd gfw <ip|主机>":              "Usage: ipd gfw <ip|host>",
@@ -79,8 +80,13 @@ func (l locale) error(err error) string {
 	if owned {
 		args := append([]any(nil), msg.args...)
 		for i, arg := range args {
-			if text, ok := arg.(messageText); ok {
-				args[i] = l.text(string(text))
+			switch value := arg.(type) {
+			case messageText:
+				args[i] = l.text(string(value))
+			case *messageError:
+				// Localize only explicitly owned nested errors for display.
+				// The original error chain (including %w causes) stays intact.
+				args[i] = errors.New(l.error(value))
 			}
 		}
 		return fmt.Errorf(l.text(msg.template), args...).Error()
@@ -134,6 +140,19 @@ func englishSummary(cmd string, args []string, rep app.Report) string {
 	for _, key := range keys {
 		if rows, ok := data[key.key].([]any); ok {
 			details = append(details, fmt.Sprintf("%d %s", len(rows), key.label))
+		}
+	}
+	if cmd == "nodes" {
+		for _, key := range []struct{ key, label string }{{"count", "nodes in input"}, {"measured_count", "nodes measured"}} {
+			if count, ok := data[key.key].(float64); ok {
+				details = append(details, fmt.Sprintf("%g %s", count, key.label))
+			}
+		}
+		switch data["measurement_status"] {
+		case "unavailable":
+			details = append(details, "measurement unavailable")
+		case "completed":
+			details = append(details, "measurement completed")
 		}
 	}
 	if cmd == "report" {

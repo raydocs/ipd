@@ -171,7 +171,7 @@ func TestEnglishCoreCommands(t *testing.T) {
 		{[]string{"label", "192.0.2.11", "原始标签"}, "", "Label saved"},
 		{[]string{"watch", "ls"}, "", "Watch list; 0 watches"},
 		{[]string{"watch", "rm", "example-watch"}, "", "Watch deleted"},
-		{[]string{"nodes", "proxies:\n  - name: original-node\n    type: socks5\n    server: 192.0.2.10\n    port: 1080\n"}, "", "Node assessment; 1 node results"},
+		{[]string{"nodes", "proxies:\n  - name: original-node\n    type: socks5\n    server: 192.0.2.10\n    port: 1080\n"}, "", "Node assessment"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.args[0], func(t *testing.T) {
@@ -350,5 +350,33 @@ func TestEnglishServiceResults(t *testing.T) {
 		if string(original) != string(after) {
 			t.Fatal("source report mutated")
 		}
+	}
+}
+
+func TestIncompleteExportMessagePreservesWarningAndCause(t *testing.T) {
+	const template = "保存 SVG: %w; empty/partial export may remain (no path cleanup attempted)"
+	cause := errors.New("filesystem 原始证据")
+	wrapped := cliError(template, cause)
+	if !errors.Is(wrapped, cause) {
+		t.Fatal("cause lost")
+	}
+	if got := locale("en").error(wrapped); got != "Save SVG: "+cause.Error()+"; empty/partial export may remain (no path cleanup attempted)" {
+		t.Fatal(got)
+	}
+	nested := cliError(template, cliError("latency 响应缺少 SVG"))
+	if got := locale("en").error(nested); hasHan(got) || got != "Save SVG: Latency response is missing SVG; empty/partial export may remain (no path cleanup attempted)" {
+		t.Fatal(got)
+	}
+	if got := locale("zh").error(nested); got != nested.Error() {
+		t.Fatal("default changed")
+	}
+}
+
+func TestNodeUnavailableOverviewDoesNotGuessReachability(t *testing.T) {
+	rep := app.Report{Verdict: "abstain", Data: map[string]any{"nodes": []any{}, "count": 3, "measured_count": 0, "measurement_status": "unavailable", "reason": "原始原因"}}
+	out, _ := renderLocalized("text", rep, "en", "nodes", nil)
+	first := strings.SplitN(string(out), "\n", 2)[0]
+	if !strings.HasPrefix(first, "VERDICT: abstain") || !strings.Contains(first, "measurement unavailable") || !strings.Contains(first, "0 nodes measured") || strings.Contains(first, "unreachable") || hasHan(first) {
+		t.Fatal(first)
 	}
 }

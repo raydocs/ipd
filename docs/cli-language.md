@@ -81,7 +81,7 @@ renderer uses a read-only JSON projection for typed and remote data alike; it
 preserves the new tri-state evidence, priority, fixes and original summary. No
 PR7 implementation is included here.
 
-PR9 `4feab3b` separately adds the latency command and local SVG persistence.
+PR9 `67e87d4cf794ea31a3079e7a397970c3dbc2aa07` (including `74f79a8`) separately adds the latency command and local SVG persistence.
 Do not copy its implementation into this language PR. When combining the two
 CLI changes, retain both Main/dispatch additions and apply this small integration:
 
@@ -91,9 +91,12 @@ CLI changes, retain both Main/dispatch additions and apply this small integratio
    `  ipd latency <target> [--svg <local-file>]  Local latency card (no overwrite or upload)`.
 3. At PR9's CLI-owned error creation sites, use `cliError` instead of `fmt.Errorf`
    for duplicate/missing `--svg`, unknown latency arguments, missing SVG and
-   `保存 SVG: %w`. The locale catalog already registers these exact templates;
-   `%w` still unwraps to the untouched filesystem error. Do not translate errors
-   returned by `svc.Latency`.
+   `保存 SVG: %w`, and the new `incomplete` wrapper
+   `保存 SVG: %w; empty/partial export may remain (no path cleanup attempted)`.
+   The locale catalog registers all these exact templates; `%w` still unwraps
+   to the untouched original cause. Nested CLI-owned missing-SVG errors are
+   localized for display, while external `svc.Latency`/filesystem causes stay
+   original. Keep the empty/partial-export warning in both languages.
 4. For PR9's usage-only errors, use
    `cliError("%s", messageText(latencyHelp))`. For its unknown-argument error use
    `cliError("未知 latency 参数 %s\n%s", a, messageText(latencyHelp))`.
@@ -107,8 +110,16 @@ CLI changes, retain both Main/dispatch additions and apply this small integratio
 If PR9 changes a CLI message template later, register that exact owned template
 rather than broadly replacing Chinese in error/evidence bodies. Test English
 latency help and each CLI error in the combined branch as well as the existing
-PR9 no-overwrite, permissions, probe-budget and exit-code tests. PR9's subsequent
-app-only card-privacy correction does not require a CLI language change.
+PR9 no-overwrite, permissions, probe-budget and exit-code tests. Keep PR9's latest security corrections verbatim: do not restore `saved` or
+`os.Remove(path)` cleanup, and do not reintroduce raw provider errors into the
+card. The new `incomplete` warning must survive locale integration. The combined
+validation uses latest PR9, including its replaced-path/failed-write tests, not
+only its original implementation commit.
+
+PR10 `9035290` independently makes unavailable node measurements abstain. The
+English node overview reports counts and explicit measurement status; it does not guess that an
+unmeasured node is unreachable or available. Preserve the returned verdict,
+status/reason fields and exit code. Combination validation includes PR10 too.
 
 ## Verification
 
@@ -120,7 +131,7 @@ codes, unmodified nested data/sources, retained original summaries and external
 errors that deliberately equal owned templates. They use local/documentation
 addresses and offline/in-process inputs, not real-service credentials or probes.
 
-Required standalone and PR7+PR9 combination checks:
+Required standalone and PR7+latest-PR9+PR10 combination checks:
 
 ```sh
 go test ./internal/cli -count=1
@@ -131,4 +142,4 @@ node --test web/judge.test.mjs
 On macOS the base suite has Linux MSS/procfs assumptions. The independently
 supplied PR2 `0511d997` test-portability patch may be applied temporarily for both
 full-suite runs and then removed; it is not part of this PR. Combination-only
-PR7/PR9 code and the integration edits above must also be removed before commit.
+PR7/PR9/PR10 code and the integration edits above must also be removed before commit.
