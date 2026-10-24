@@ -87,6 +87,10 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(web.FS))))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.Svc != nil && s.Svc.Look != nil {
+			_, age := s.Svc.Look.SnapshotAge(time.Now().UTC())
+			w.Header().Set("X-IPD-Snapshot-Age", strconv.FormatInt(age, 10))
+		}
 		s.note(r)
 		if !s.allow(r) {
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
@@ -142,6 +146,9 @@ func (s *Server) allow(r *http.Request) bool {
 func (s *Server) SvcNow() time.Time { return time.Now().UTC() }
 
 func (s *Server) write(w http.ResponseWriter, r *http.Request, status int, rep app.Report) {
+	if s.Svc != nil {
+		rep = s.Svc.WithSnapshot(rep)
+	}
 	format := negotiate(r, strings.HasPrefix(r.URL.Path, "/v1"))
 	if r.URL.Query().Get("stream") == "1" {
 		s.writeSSE(w, rep)
@@ -155,6 +162,9 @@ func (s *Server) write(w http.ResponseWriter, r *http.Request, status int, rep a
 }
 
 func (s *Server) writeSSE(w http.ResponseWriter, rep app.Report) {
+	if s.Svc != nil {
+		rep = s.Svc.WithSnapshot(rep)
+	}
 	w.Header().Set("content-type", "text/event-stream")
 	w.Header().Set("cache-control", "no-cache")
 	b, _ := json.Marshal(rep)

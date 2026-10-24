@@ -1,22 +1,22 @@
 package lookup
 
-import "sort"
+import (
+	"net/netip"
+	"sort"
+	"strconv"
+)
 
 func merge(ip string, hits []Hit) Profile {
 	sort.Slice(hits, func(i, j int) bool { return hits[i].Source < hits[j].Source })
 	p := Profile{IP: ip, Hits: hits, Flags: []string{}, AnnouncedBy: []int{}}
 	if len(hits) == 0 {
 		p.ASType = "unknown"
+		p.Conflicts = []Conflict{}
+		annotateAnycast(ip, &p)
 		return p
 	}
-	ccs := map[string]string{}
-	types := map[string]string{}
 	for _, h := range hits {
 		r := h.Rec
-		ccs[h.Source] = r.CC
-		if r.ASType != "" {
-			types[h.Source] = r.ASType
-		}
 		p.Flags = union(p.Flags, r.Flags)
 		if r.Cloud != "" && p.Cloud == "" {
 			p.Cloud = r.Cloud
@@ -25,9 +25,15 @@ func merge(ip string, hits []Hit) Profile {
 		// Field precedence: bgp for ASN, peeringdb for type, ip2region for CN city,
 		// ipinfo/dbip/ip2location for geo. First non-empty wins after priority pick.
 	}
-	p.ASN = pickASN(hits)
+	asnText, _ := weightedValue(hits, "asn", func(r Rec) string {
+		if r.ASN == 0 {
+			return ""
+		}
+		return strconv.Itoa(r.ASN)
+	})
+	p.ASN, _ = strconv.Atoi(asnText)
 	p.Org = pickStr(hits, func(r Rec) string { return r.Org }, "bgp", "ipinfo_lite", "rir_delegated", "dbip_lite")
-	p.CC = majorityCC(hits)
+	p.CC, _ = weightedValue(hits, "cc", func(r Rec) string { return r.CC })
 	p.Region = pickStr(hits, func(r Rec) string { return r.Region }, "ip2region", "dbip_lite", "ip2location_lite", "ipinfo_lite")
 	p.City = pickStr(hits, func(r Rec) string { return r.City }, "ip2region", "dbip_lite", "ip2location_lite", "ipinfo_lite")
 	p.Lat, p.Lon = pickGeo(hits)
@@ -64,88 +70,242 @@ func merge(ip string, hits []Hit) Profile {
 		seenASN[h.Rec.ASN] = struct{}{}
 		p.AnnouncedBy = append(p.AnnouncedBy, h.Rec.ASN)
 	}
-	p.Disagreements = disagreements(hits)
+	p.Conflicts = collectConflicts(hits, p)
+	p.Disagreements = disagreementsFrom(p.Conflicts)
+	annotateAnycast(ip, &p)
 	if p.ASType == "" {
 		p.ASType = "unknown"
 	}
 	return p
 }
 
-func disagreements(hits []Hit) []Disagreement {
-	var out []Disagreement
-	cc := map[string]any{}
+// Weights prefer a measurement source over a registry hint. Equal weights
+// break toward the earlier name in the preference list for that field.
+func fieldWeight(field, source string) float64 {
+	table := map[string]map[string]float64{
+		"asn": {
+			"bgp": 8, "ipinfo_lite": 5, "dbip_lite": 4, "ip2location_lite": 3,
+			"cloud_ranges": 3, "rir_delegated": 2,
+		},
+		"cc": {
+			"ipinfo_lite": 5, "dbip_lite": 5, "ip2location_lite": 4, "ip2region": 4,
+			"geofeed": 3, "cloud_ranges": 2, "bgp": 2, "rir_delegated": 1,
+		},
+		"as_type": {"peeringdb": 6, "cloud_ranges": 5, "ipinfo_lite": 4, "bgp": 2},
+		"city":    {"ip2region": 5, "dbip_lite": 4, "ip2location_lite": 4, "ipinfo_lite": 3},
+	}
+	if w, ok := table[field][source]; ok && w > 0 {
+		return w
+	}
+	return 1
+}
+
+func preferOrder(field string) []string {
+	switch field {
+	case "asn":
+		return []string{"bgp", "ipinfo_lite", "dbip_lite", "ip2location_lite", "cloud_ranges", "rir_delegated"}
+	case "cc":
+		return []string{"ipinfo_lite", "dbip_lite", "ip2location_lite", "ip2region", "geofeed", "bgp", "rir_delegated"}
+	case "as_type":
+		return []string{"peeringdb", "cloud_ranges", "ipinfo_lite", "bgp"}
+	case "city":
+		return []string{"ip2region", "dbip_lite", "ip2location_lite", "ipinfo_lite"}
+	default:
+		return nil
+	}
+}
+
+func weightedValue(hits []Hit, field string, get func(Rec) string) (string, float64) {
+	best, bestW := "", -1.0
+	bestPref := 1 << 20
+	pref := map[string]int{}
+	for i, s := range preferOrder(field) {
+		pref[s] = i
+	}
 	for _, h := range hits {
-		if h.Rec.CC == "" {
+		v := get(h.Rec)
+		if v == "" {
 			continue
 		}
-		cc[h.Source] = h.Rec.CC
-	}
-	if distinct(cc) > 1 {
-		out = append(out, Disagreement{Field: "cc", Values: cc})
-	}
-	at := map[string]any{}
-	for _, h := range hits {
-		if h.Rec.ASType == "" {
-			continue
+		w := fieldWeight(field, h.Source)
+		pi, ok := pref[h.Source]
+		if !ok {
+			pi = 1 << 20
 		}
-		at[h.Source] = h.Rec.ASType
+		if w > bestW || (w == bestW && pi < bestPref) {
+			best, bestW, bestPref = v, w, pi
+		}
 	}
-	if distinct(at) > 1 {
-		out = append(out, Disagreement{Field: "as_type", Values: at})
+	if bestW < 0 {
+		return "", 0
+	}
+	return best, bestW
+}
+
+func collectConflicts(hits []Hit, p Profile) []Conflict {
+	var out []Conflict
+	add := func(field, chosen string, chosenW float64, votes []Vote, note string) {
+		if len(votes) == 0 {
+			return
+		}
+		out = append(out, Conflict{Field: field, Chosen: chosen, ChosenWeight: chosenW, Note: note, Votes: votes})
+	}
+	if votes := votesFor(hits, "cc", func(r Rec) string { return r.CC }); conflicting(votes) {
+		chosen, w := weightedValue(hits, "cc", func(r Rec) string { return r.CC })
+		add("cc", chosen, w, votes, "country sources disagree")
+	} else if reg := registryCountry(hits); reg != "" && reg != p.CC && p.CC != "" {
+		votes = append(votes, Vote{Source: "rir_delegated#registered", Value: reg, Weight: fieldWeight("cc", "rir_delegated")})
+		chosen, w := weightedValue(hits, "cc", func(r Rec) string { return r.CC })
+		add("cc", chosen, w, votes, "registry country differs from geolocation")
+	}
+	if votes := votesFor(hits, "asn", func(r Rec) string {
+		if r.ASN == 0 {
+			return ""
+		}
+		return strconv.Itoa(r.ASN)
+	}); conflicting(votes) {
+		chosen, w := weightedValue(hits, "asn", func(r Rec) string {
+			if r.ASN == 0 {
+				return ""
+			}
+			return strconv.Itoa(r.ASN)
+		})
+		add("asn", chosen, w, votes, "ASN sources disagree")
+	}
+	if votes := votesFor(hits, "as_type", func(r Rec) string { return r.ASType }); conflicting(votes) {
+		chosen, w := weightedValue(hits, "as_type", func(r Rec) string { return r.ASType })
+		if p.ASType != "" {
+			chosen = p.ASType
+		}
+		add("as_type", chosen, w, votes, "network type sources disagree")
+	}
+	if votes := votesFor(hits, "city", func(r Rec) string { return r.City }); conflicting(votes) {
+		chosen, w := weightedValue(hits, "city", func(r Rec) string { return r.City })
+		add("city", chosen, w, votes, "city sources disagree")
 	}
 	return out
 }
 
-func distinct(m map[string]any) int {
-	s := map[string]struct{}{}
-	for _, v := range m {
-		s[toString(v)] = struct{}{}
+func votesFor(hits []Hit, field string, get func(Rec) string) []Vote {
+	var votes []Vote
+	for _, h := range hits {
+		v := get(h.Rec)
+		if v == "" {
+			continue
+		}
+		votes = append(votes, Vote{Source: h.Source, Value: v, Weight: fieldWeight(field, h.Source)})
 	}
-	return len(s)
+	sort.Slice(votes, func(i, j int) bool {
+		if votes[i].Source == votes[j].Source {
+			return votes[i].Value < votes[j].Value
+		}
+		return votes[i].Source < votes[j].Source
+	})
+	return votes
 }
 
-func toString(v any) string {
-	if s, ok := v.(string); ok {
-		return s
+func conflicting(votes []Vote) bool {
+	if len(votes) < 2 {
+		return false
+	}
+	first := votes[0].Value
+	for _, v := range votes[1:] {
+		if v.Value != first {
+			return true
+		}
+	}
+	return false
+}
+
+func registryCountry(hits []Hit) string {
+	for _, h := range hits {
+		if h.Source == "rir_delegated" && h.Rec.RegisteredCC != "" {
+			return h.Rec.RegisteredCC
+		}
 	}
 	return ""
 }
 
-func majorityCC(hits []Hit) string {
-	counts := map[string]int{}
-	var order []string
-	for _, h := range hits {
-		if h.Rec.CC == "" {
+func disagreementsFrom(conflicts []Conflict) []Disagreement {
+	var out []Disagreement
+	for _, c := range conflicts {
+		if c.Field != "cc" && c.Field != "as_type" && c.Field != "asn" {
 			continue
 		}
-		if counts[h.Rec.CC] == 0 {
-			order = append(order, h.Rec.CC)
+		vals := map[string]any{}
+		for _, v := range c.Votes {
+			vals[v.Source] = v.Value
 		}
-		counts[h.Rec.CC]++
-	}
-	best, n := "", 0
-	for _, cc := range order {
-		if counts[cc] > n {
-			best, n = cc, counts[cc]
+		if len(vals) > 1 {
+			out = append(out, Disagreement{Field: c.Field, Values: vals})
 		}
 	}
-	return best
+	return out
 }
 
-func pickASN(hits []Hit) int {
-	for _, src := range []string{"bgp", "ipinfo_lite", "dbip_lite", "ip2location_lite", "rir_delegated", "cloud_ranges"} {
-		for _, h := range hits {
-			if h.Source == src && h.Rec.ASN != 0 {
-				return h.Rec.ASN
+// cloudflareDNS is announced by AS13335 and omitted from the published proxy
+// list at https://www.cloudflare.com/ips-v4.
+var cloudflareDNS = []netip.Prefix{
+	netip.MustParsePrefix("1.1.1.0/24"),
+	netip.MustParsePrefix("1.0.0.0/24"),
+}
+
+// knownAnycast is public DNS anycast that should not be scored as a single site.
+var knownAnycast = append(append([]netip.Prefix{}, cloudflareDNS...),
+	netip.MustParsePrefix("8.8.8.0/24"),
+	netip.MustParsePrefix("8.8.4.0/24"),
+	netip.MustParsePrefix("9.9.9.0/24"),
+	netip.MustParsePrefix("149.112.112.0/24"),
+	netip.MustParsePrefix("208.67.222.0/24"),
+	netip.MustParsePrefix("208.67.220.0/24"),
+)
+
+func annotateAnycast(ip string, p *Profile) {
+	addr, err := netip.ParseAddr(ip)
+	omitted := false
+	known := false
+	if err == nil {
+		for _, pfx := range cloudflareDNS {
+			if pfx.Contains(addr) {
+				omitted = true
+				known = true
+				break
+			}
+		}
+		if !known {
+			for _, pfx := range knownAnycast {
+				if pfx.Contains(addr) {
+					known = true
+					break
+				}
 			}
 		}
 	}
-	for _, h := range hits {
-		if h.Rec.ASN != 0 {
-			return h.Rec.ASN
+	flagged := false
+	for _, h := range p.Hits {
+		if has(h.Rec.Flags, "anycast") {
+			flagged = true
+			break
 		}
 	}
-	return 0
+	if !known && !flagged {
+		if p.Conflicts == nil {
+			p.Conflicts = []Conflict{}
+		}
+		return
+	}
+	p.Anycast = true
+	p.Flags = union(p.Flags, []string{"anycast"})
+	note := "known anycast"
+	if omitted && !flagged {
+		note = "known anycast prefix omitted from Cloudflare's published ranges"
+	} else if omitted {
+		note = "anycast; Cloudflare's published proxy ranges omit this prefix"
+	}
+	p.Conflicts = append(p.Conflicts, Conflict{
+		Field: "anycast", Chosen: "anycast", ChosenWeight: 5, Anycast: true, Note: note,
+		Votes: []Vote{{Source: "known_anycast", Value: "anycast", Weight: 5}},
+	})
 }
 
 func pickStr(hits []Hit, get func(Rec) string, prefer ...string) string {

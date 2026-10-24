@@ -128,6 +128,7 @@ func Render(format string, rep app.Report) ([]byte, string) {
 func plaintext(rep app.Report) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "VERDICT: %s — %s\n", rep.Verdict, oneLine(rep.Summary))
+	fmt.Fprintf(&b, "snapshot_age_seconds: %d\n", rep.SnapshotAgeSeconds)
 	writeData(&b, "", rep.Data)
 	if len(rep.Sources) > 0 {
 		ids := make([]string, 0, len(rep.Sources))

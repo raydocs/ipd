@@ -20,8 +20,6 @@ import (
 	"ipd/internal/lookup"
 )
 
-const maxRows = 400000
-
 // FeedResult is one dataset after a refresh attempt.
 type FeedResult struct {
 	ID   string `json:"id"`
@@ -93,11 +91,25 @@ func Load(eng *lookup.Engine, cfg *config.Config) error {
 		}
 		return err
 	}
+	seenSnap := map[string]bool{}
+	for _, ent := range entries {
+		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".ipds") {
+			continue
+		}
+		id := strings.TrimSuffix(ent.Name(), ".ipds")
+		if _, err := eng.InstallSnapshot(filepath.Join(dir, ent.Name())); err != nil {
+			return err
+		}
+		seenSnap[id] = true
+	}
 	for _, ent := range entries {
 		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".tsv") {
 			continue
 		}
 		id := strings.TrimSuffix(ent.Name(), ".tsv")
+		if seenSnap[id] {
+			continue
+		}
 		rows, meta, err := readSnapshot(filepath.Join(dir, ent.Name()), filepath.Join(dir, id+".meta.json"))
 		if err != nil {
 			return err
@@ -185,23 +197,27 @@ func httpGet(ctx context.Context, client *http.Client, raw string, max int64) ([
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("%s: %d %s", redact(raw), resp.StatusCode, truncate(b))
 	}
-	return gunzip(b), nil
+	return gunzip(b)
 }
 
-func gunzip(b []byte) []byte {
+func gunzip(b []byte) ([]byte, error) {
 	if len(b) < 2 || b[0] != 0x1f || b[1] != 0x8b {
-		return b
+		return b, nil
 	}
 	r, err := gzip.NewReader(bytes.NewReader(b))
 	if err != nil {
-		return b
+		return nil, err
 	}
 	defer r.Close()
-	out, err := io.ReadAll(io.LimitReader(r, 200<<20))
-	if err != nil && len(out) == 0 {
-		return b
+	const limit = 1 << 30
+	out, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
 	}
-	return out
+	if len(out) > limit {
+		return nil, fmt.Errorf("decompressed body exceeded %d bytes", limit)
+	}
+	return out, nil
 }
 
 func redact(s string) string {
@@ -251,6 +267,50 @@ func (u *updater) apply(id string, m lookup.SourceMeta, rows []lookup.SourceRow,
 		fr.Err = err.Error()
 	}
 	u.logf(fmt.Sprintf("%s 已更新 %d 条", id, fr.Rows))
+	return fr
+}
+
+// streamRows writes a memory-mappable snapshot and swaps it into the engine.
+// The row cap is gone: max is not applied. A failed empty parse leaves the previous table in place.
+func (u *updater) streamRows(m lookup.SourceMeta, srcURL, note string, fill func(func(lookup.Rec)) error) FeedResult {
+	fr := FeedResult{ID: m.ID, URL: srcURL, Note: note}
+	bldr := lookup.NewSnapshotBuilder(m)
+	err := fill(func(r lookup.Rec) { bldr.Add(r) })
+	if err != nil {
+		fr.Err = err.Error()
+		u.logf(m.ID + " 失败: " + fr.Err)
+		return fr
+	}
+	if bldr.Len() == 0 {
+		fr.Err = "no rows parsed"
+		u.logf(m.ID + " 没有解析出前缀，保留原快照")
+		return fr
+	}
+	dir := filepath.Join(u.cfg.DataDir, "feeds")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		fr.Err = err.Error()
+		return fr
+	}
+	path := filepath.Join(dir, m.ID+".ipds")
+	if err := bldr.CommitFile(path); err != nil {
+		fr.Err = err.Error()
+		return fr
+	}
+	metaPath := filepath.Join(dir, m.ID+".meta.json")
+	if raw, err := json.Marshal(bldr.Meta); err == nil {
+		_ = os.WriteFile(metaPath, raw, 0o644)
+	}
+	if u.eng != nil {
+		n, err := u.eng.InstallSnapshot(path)
+		if err != nil {
+			fr.Err = err.Error()
+			return fr
+		}
+		fr.Rows = n
+	} else {
+		fr.Rows = bldr.Len()
+	}
+	u.logf(fmt.Sprintf("%s 已更新 %d 条", m.ID, fr.Rows))
 	return fr
 }
 
@@ -334,12 +394,12 @@ func (u *updater) cloud(ctx context.Context) FeedResult {
 		urls  []string
 		parse func([]byte) ([]lookup.SourceRow, error)
 	}{
-		{[]string{"https://ip-ranges.amazonaws.com/ip-ranges.json"}, func(b []byte) ([]lookup.SourceRow, error) { return parseAWS(b, maxRows) }},
-		{[]string{"https://www.gstatic.com/ipranges/cloud.json"}, func(b []byte) ([]lookup.SourceRow, error) { return parseGCP(b, maxRows) }},
+		{[]string{"https://ip-ranges.amazonaws.com/ip-ranges.json"}, func(b []byte) ([]lookup.SourceRow, error) { return parseAWS(b, 0) }},
+		{[]string{"https://www.gstatic.com/ipranges/cloud.json"}, func(b []byte) ([]lookup.SourceRow, error) { return parseGCP(b, 0) }},
 		{[]string{"https://www.cloudflare.com/ips-v4"}, func(b []byte) ([]lookup.SourceRow, error) { return parseCloudflare(b) }},
 		{[]string{"https://www.cloudflare.com/ips-v6"}, func(b []byte) ([]lookup.SourceRow, error) { return parseCloudflare(b) }},
 		{[]string{"https://raw.githubusercontent.com/femueller/cloud-ip-ranges/master/microsoft-azure-ip-ranges.json"}, func(b []byte) ([]lookup.SourceRow, error) {
-			return parseAzure(b, maxRows)
+			return parseAzure(b, 0)
 		}},
 	}
 	for _, p := range parts {
@@ -374,7 +434,7 @@ func (u *updater) list(ctx context.Context, id string, urls []string, rec lookup
 	if err != nil {
 		return []FeedResult{u.apply(id, meta(id, "source terms", attr, page, "day"), nil, "", "", err)}
 	}
-	rows, perr := parseCIDRList(b, id, rec, maxRows)
+	rows, perr := parseCIDRList(b, id, rec, 0)
 	if perr != nil {
 		err = perr
 	}
@@ -392,7 +452,7 @@ func (u *updater) spamhaus(ctx context.Context) FeedResult {
 			errs = append(errs, err.Error())
 			continue
 		}
-		got, err := parseCIDRList(b, "spamhaus_drop", lookup.Rec{Flags: []string{"malicious"}}, maxRows)
+		got, err := parseCIDRList(b, "spamhaus_drop", lookup.Rec{Flags: []string{"malicious"}}, 0)
 		if err != nil {
 			errs = append(errs, err.Error())
 			continue
@@ -426,7 +486,7 @@ func (u *updater) x4b(ctx context.Context) FeedResult {
 			errs = append(errs, err.Error())
 			continue
 		}
-		got, err := parseCIDRList(b, "x4bnet", s.rec, maxRows)
+		got, err := parseCIDRList(b, "x4bnet", s.rec, 0)
 		if err != nil {
 			errs = append(errs, err.Error())
 			continue
@@ -453,17 +513,17 @@ func (u *updater) dbip(ctx context.Context) FeedResult {
 		urls = append(urls, fmt.Sprintf("https://download.db-ip.com/free/dbip-%s-lite-%s.csv.gz", kind, t.Format("2006-01")))
 	}
 	u.logf("下载 DB-IP " + kind + " lite")
-	b, url, err := u.fetch(ctx, urls, 80<<20)
+	b, url, err := u.fetch(ctx, urls, 256<<20)
 	if err != nil {
 		return u.apply("dbip_lite", lookup.SourceMeta{}, nil, "", "", err)
 	}
-	rows, err := parseDBIP(b, "dbip_lite", maxRows)
 	m := meta("dbip_lite", "CC BY 4.0", "IP Geolocation by DB-IP", url, "month")
-	note := ""
-	if len(rows) >= maxRows {
-		note = fmt.Sprintf("capped at %d prefixes", maxRows)
-	}
-	return u.apply("dbip_lite", m, rows, url, note, err)
+	return u.streamRows(m, url, "", func(add func(lookup.Rec)) error {
+		return walkDBIP(bytes.NewReader(b), "dbip_lite", 0, func(row lookup.SourceRow) error {
+			add(row.Rec)
+			return nil
+		})
+	})
 }
 
 func (u *updater) rir(ctx context.Context) FeedResult {
@@ -479,15 +539,12 @@ func (u *updater) rir(ctx context.Context) FeedResult {
 	var gotURL []string
 	var errs []string
 	for _, raw := range urls {
-		if len(rows) >= maxRows {
-			break
-		}
 		b, url, err := u.fetch(ctx, []string{raw}, 40<<20)
 		if err != nil {
 			errs = append(errs, err.Error())
 			continue
 		}
-		part, err := parseRIR(b, "rir_delegated", maxRows-len(rows))
+		part, err := parseRIR(b, "rir_delegated", 0)
 		if err != nil {
 			errs = append(errs, err.Error())
 			continue
@@ -509,17 +566,17 @@ func (u *updater) asn(ctx context.Context) FeedResult {
 		"https://bgp.tools/table.txt",
 		"https://iptoasn.com/data/ip2asn-v4.tsv.gz",
 		"https://iptoasn.com/data/ip2asn-v4.tsv",
-	}, 120<<20)
+	}, 256<<20)
 	if err != nil {
 		return u.apply("bgp", lookup.SourceMeta{}, nil, "", "", err)
 	}
-	rows, err := parseIP2ASN(b, "bgp", maxRows)
 	m := meta("bgp", "public BGP table", "bgp.tools / RIPE RIS / RouteViews derived prefix-to-ASN", url, "day")
-	note := ""
-	if len(rows) >= maxRows {
-		note = fmt.Sprintf("capped at %d prefixes", maxRows)
-	}
-	return u.apply("bgp", m, rows, url, note, err)
+	return u.streamRows(m, url, "", func(add func(lookup.Rec)) error {
+		return walkIP2ASN(bytes.NewReader(b), "bgp", 0, func(row lookup.SourceRow) error {
+			add(row.Rec)
+			return nil
+		})
+	})
 }
 
 func (u *updater) geolite(ctx context.Context) FeedResult {
@@ -594,7 +651,7 @@ func (u *updater) ipinfo(ctx context.Context) FeedResult {
 	if err != nil {
 		return FeedResult{ID: "ipinfo_lite", Err: err.Error(), Note: "token was not logged"}
 	}
-	rows, err := parseIPinfoLite(b, "ipinfo_lite", maxRows)
+	rows, err := parseIPinfoLite(b, "ipinfo_lite", 0)
 	m := meta("ipinfo_lite", "CC BY-SA 4.0", "IP address data powered by IPinfo", "https://ipinfo.io/data/free/ipinfo_lite", "day")
 	fr := u.apply("ipinfo_lite", m, rows, "ipinfo lite", "", err)
 	_ = url

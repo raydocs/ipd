@@ -25,6 +25,7 @@ func TestLookupLatency(t *testing.T) {
 	sort.Slice(ds, func(i, j int) bool { return ds[i] < ds[j] })
 	p95 := ds[int(float64(len(ds))*0.95)]
 	p99 := ds[int(float64(len(ds))*0.99)]
+	t.Logf("LOOKUP_N %d LOOKUP_P95 %s LOOKUP_P99 %s", len(ds), p95, p99)
 	if p95 > 20*time.Millisecond || p99 > 50*time.Millisecond {
 		t.Fatalf("p95 %s p99 %s n %d", p95, p99, len(ds))
 	}

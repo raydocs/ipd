@@ -22,11 +22,13 @@ const ModeStdio = "stdio"
 
 // Out is the structured tool result. Every tool returns this shape.
 type Out struct {
-	Verdict   string         `json:"verdict"`
-	SummaryMD string         `json:"summary_md"`
-	Data      map[string]any `json:"data"`
-	Sources   []app.Source   `json:"sources"`
-	CachedAt  string         `json:"cached_at"`
+	Verdict            string         `json:"verdict"`
+	SummaryMD          string         `json:"summary_md"`
+	Data               map[string]any `json:"data"`
+	Sources            []app.Source   `json:"sources"`
+	CachedAt           string         `json:"cached_at"`
+	SnapshotAt         string         `json:"snapshot_at"`
+	SnapshotAgeSeconds int64          `json:"snapshot_age_seconds"`
 }
 
 // Server builds an MCP server bound to svc.
@@ -213,6 +215,7 @@ func add[In any](s *mcp.Server, svc *app.Service, mode, name, desc string, local
 		if err != nil {
 			return nil, Out{}, err
 		}
+		rep = svc.WithSnapshot(rep)
 		out, err := toOut(rep)
 		if err != nil {
 			return nil, Out{}, err
@@ -244,7 +247,11 @@ func toOut(r app.Report) (Out, error) {
 	if len(sum) > 600 {
 		sum = sum[:600]
 	}
-	return Out{Verdict: r.Verdict, SummaryMD: sum, Data: m, Sources: src, CachedAt: r.CachedAtRFC()}, nil
+	at := ""
+	if !r.SnapshotAt.IsZero() {
+		at = r.SnapshotAt.UTC().Format(time.RFC3339)
+	}
+	return Out{Verdict: r.Verdict, SummaryMD: sum, Data: m, Sources: src, CachedAt: r.CachedAtRFC(), SnapshotAt: at, SnapshotAgeSeconds: r.SnapshotAgeSeconds}, nil
 }
 
 func oneLine(s string) string {
@@ -276,7 +283,9 @@ func Methodology() string {
 
 Purity starts at 100. Each factor in models/purity.yaml subtracts a published weight. There is no paid adjustment.
 
-Residential class is a hard rule followed by the tree in models/residential.json. If the winning probability is below 0.55 the class is abstain (无法判定). A prefix registered to an access ISP but announced by a hoster, colocated with a datacenter, or missing rDNS is isp_static with suspected_fake_residential.
+Residential class is a hard rule followed by the tree in models/residential.json, then an evidence gate. rDNS patterns, prefix age, neighbour signals, and RIR org type have to support the call. Below 0.70 confidence, or with only one weak feature, the class is "cannot determine" (无法判定). A prefix registered to an access ISP but announced by a hoster is isp_static with suspected_fake_residential. Country, ASN, and city conflicts are listed with source weights. 1.1.1.0/24 is anycast even though Cloudflare's published proxy ranges omit it.
+
+被墙 requires two healthy probes on a carrier and two carriers. One failed probe is insufficient_sample. Globalping stays inside 250 anonymous measurements per hour (500 with a token) and 50 probes per measurement.
 
 Native means the RIR country, the geo country, the announcer country, and geofeed agree, and RTT does not put the address somewhere else. Otherwise the call is broadcast, or abstain when the inputs are missing.
 

@@ -17,12 +17,32 @@ type Source struct {
 
 // Report is the envelope every surface renders.
 type Report struct {
-	Verdict     string    `json:"verdict"`
-	Summary     string    `json:"summary_md"`
-	Data        any       `json:"data"`
-	Sources     []Source  `json:"sources"`
-	CachedAt    time.Time `json:"cached_at"`
-	Attribution []string  `json:"attribution"`
+	Verdict            string    `json:"verdict"`
+	Summary            string    `json:"summary_md"`
+	Data               any       `json:"data"`
+	Sources            []Source  `json:"sources"`
+	CachedAt           time.Time `json:"cached_at"`
+	Attribution        []string  `json:"attribution"`
+	SnapshotAt         time.Time `json:"snapshot_at"`
+	SnapshotAgeSeconds int64     `json:"snapshot_age_seconds"`
+}
+
+// WithSnapshot copies the prefix-snapshot clock onto a response.
+func (s *Service) WithSnapshot(r Report) Report {
+	if s == nil || s.Look == nil {
+		return r
+	}
+	at, age := s.Look.SnapshotAge(s.now())
+	r.SnapshotAt = at
+	r.SnapshotAgeSeconds = age
+	return r
+}
+
+func conflictsOrEmpty(p lookup.Profile) []lookup.Conflict {
+	if len(p.Conflicts) == 0 {
+		return []lookup.Conflict{}
+	}
+	return p.Conflicts
 }
 
 func (r Report) CachedAtRFC() string {
@@ -37,7 +57,7 @@ func ExitCode(verdict string) int {
 	switch verdict {
 	case "ok", "safe", "native", "yes", "reserved":
 		return 0
-	case "ok_with_caveats", "risky", "abstain", "partial", "broadcast", "originals_only", "web_only", "app_only", "congested", "carrier_partial":
+	case "ok_with_caveats", "risky", "abstain", "partial", "broadcast", "originals_only", "web_only", "app_only", "congested", "carrier_partial", "insufficient_sample", "cannot determine":
 		return 10
 	default:
 		return 20

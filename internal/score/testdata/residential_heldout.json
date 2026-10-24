@@ -1,0 +1,17 @@
+{
+  "method": "Labels come from public enumerations and from features a third party can recompute (rDNS pattern, RIR netname/descr, published cloud or Tor lists, prefix age). Rows are not the synthetic counts in eval_test.go. A decision requires the evidence gate in evidence.go; otherwise the class is \"cannot determine\".",
+  "rows": [
+    {"id": "cf-dns", "ip": "1.1.1.1", "label": "cdn_anycast", "source": "Cloudflare public DNS. 1.1.1.0/24 is anycast and is omitted from https://www.cloudflare.com/ips-v4"},
+    {"id": "google-dns", "ip": "8.8.8.8", "label": "cdn_anycast", "source": "Google Public DNS, AS15169, documented anycast"},
+    {"id": "quad9", "ip": "9.9.9.9", "label": "cdn_anycast", "source": "Quad9 public resolver, documented anycast"},
+    {"id": "aws", "ip": "3.1.2.4", "label": "hosting", "source": "Address in an AWS ip-ranges style cloud prefix in the bundled snapshot"},
+    {"id": "tor", "ip": "185.220.101.5", "label": "hosting", "source": "Tor Project bulk exit list pattern"},
+    {"id": "comcast", "ip": "24.1.2.3", "label": "residential_fixed", "source": "rDNS hsd1 dynamic-pool pattern plus RIR descr DYNAMIC BROADBAND FTTH"},
+    {"id": "tmobile", "ip": "172.58.1.20", "label": "residential_mobile", "source": "RIR descr MOBILE WIRELESS and mobile ASN type"},
+    {"id": "att-business", "ip": "12.1.0.1", "label": "business", "source": "RIR descr ENTERPRISE BUSINESS"},
+    {"id": "fake-residential", "ip": "76.100.50.10", "label": "isp_static", "source": "Prefix registered to a cable netname and announced by a hoster, prefix age 20 days, rDNS missing"},
+    {"id": "country-only", "label": "cannot determine", "source": "A country code is not evidence of a user type", "profile": {"cc": "US"}},
+    {"id": "mobile-asn-only", "label": "cannot determine", "source": "ASN type alone, with no rDNS, RIR org type, eyeball estimate, or prefix age", "profile": {"as_type": "mobile"}},
+    {"id": "cable-no-rdns", "label": "cannot determine", "source": "Cable ASN type without rDNS or RIR access keywords", "profile": {"as_type": "cable"}}
+  ]
+}

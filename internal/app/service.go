@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -168,6 +169,8 @@ func (s *Service) LookupIP(ctx context.Context, ip string) (Report, error) {
 		"registered_cc": p.RegisteredCC,
 		"announced_by":  p.AnnouncedBy,
 		"disagreements": p.Disagreements,
+		"conflicts":     conflictsOrEmpty(p),
+		"anycast":       p.Anycast,
 	}
 	if data["announced_by"] == nil {
 		data["announced_by"] = []int{}
@@ -208,7 +211,7 @@ func (s *Service) Risk(ctx context.Context, ip string, live bool) (Report, error
 	comp := s.Look.Composition(prefix24(addr))
 	nat := score.ClassifyNative(p)
 	feats := score.FeaturesFromProfile(p)
-	cls := score.ClassifyResidential(feats)
+	cls := score.ClassifyObserved(p, comp, feats)
 	pur := score.ScorePurity(score.PurityInput{
 		ASType: p.ASType, Cloud: p.Cloud, Flags: p.Flags,
 		Disagreement:          len(p.Disagreements) > 0,
@@ -218,7 +221,7 @@ func (s *Service) Risk(ctx context.Context, ip string, live bool) (Report, error
 		Scamalytics:           scam, IPQS: ipqs, AbuseConfidence: abuse,
 		DNSBLHits: len(hits),
 	})
-	if cls.Class == "abstain" {
+	if cls.Class == "abstain" || cls.Class == "cannot determine" {
 		// keep purity verdict; residential abstains on its own
 	}
 	data := map[string]any{
@@ -230,6 +233,8 @@ func (s *Service) Risk(ctx context.Context, ip string, live bool) (Report, error
 		"native":        nat,
 		"confidence":    pur.Confidence,
 		"disagreements": p.Disagreements,
+		"conflicts":     conflictsOrEmpty(p),
+		"anycast":       p.Anycast,
 		"enrichment":    enrich,
 		"dnsbl":         hits,
 	}
@@ -237,7 +242,7 @@ func (s *Service) Risk(ctx context.Context, ip string, live bool) (Report, error
 	if cls.SuspectedFakeResidential {
 		sum += "; suspected fake residential"
 	}
-	if cls.Class == "abstain" {
+	if cls.Class == "abstain" || cls.Class == "cannot determine" {
 		sum += "; 住宅类型无法判定"
 	}
 	srcs := s.decorate(sourcesFrom(p))
@@ -507,8 +512,16 @@ func (s *Service) GFW(ctx context.Context, target string, ports []int) (Report, 
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	samples, err := s.measure(ctx, target, ports)
-	if err != nil {
+	if err != nil && !errors.Is(err, probe.ErrQuota) {
 		return Report{}, err
+	}
+	if len(samples) == 0 {
+		note := "vantage returned no probes"
+		if errors.Is(err, probe.ErrQuota) {
+			note = "globalping hourly quota exhausted"
+		}
+		judged := gfw.Result{Verdict: gfw.VerdictInsufficient, PerCarrier: map[string]string{"ct": "insufficient", "cu": "insufficient", "cm": "insufficient"}, Probes: []gfw.ProbeView{}, Control: []gfw.ProbeView{}, Notes: []string{note}, Confidence: 0.2}
+		return Report{Verdict: judged.Verdict, Summary: judged.Verdict + " — " + note, Data: judged, Sources: []Source{{ID: s.Vantage.Name()}}, CachedAt: s.now(), Attribution: s.attr()}, nil
 	}
 	obs := make([]gfw.Obs, 0, len(samples))
 	for _, sm := range samples {
@@ -530,7 +543,7 @@ func (s *Service) measure(ctx context.Context, target string, ports []int) ([]pr
 	if s.Vantage == nil || !s.Vantage.Enabled() {
 		return nil, fmt.Errorf("vantage disabled")
 	}
-	base, err := s.Vantage.Measure(ctx, probe.Query{Kind: probe.KindPing, Target: target, Limit: 1, Control: 1, Packets: 3})
+	base, err := s.Vantage.Measure(ctx, probe.Query{Kind: probe.KindPing, Target: target, Limit: gfw.Quorum, Control: 1, Packets: 3})
 	if err != nil {
 		return nil, err
 	}
@@ -542,14 +555,20 @@ func (s *Service) measure(ctx context.Context, target string, ports []int) ([]pr
 		tcpPorts = tcpPorts[:2]
 	}
 	for _, p := range tcpPorts {
-		extra, err := s.Vantage.Measure(ctx, probe.Query{Kind: probe.KindTCP, Target: target, Port: p, Limit: 1, Control: 1, Packets: 2})
+		extra, err := s.Vantage.Measure(ctx, probe.Query{Kind: probe.KindTCP, Target: target, Port: p, Limit: gfw.Quorum, Control: 1, Packets: 2})
+		if errors.Is(err, probe.ErrQuota) {
+			return base, err
+		}
 		if err != nil {
 			continue
 		}
 		base = mergeByProbe(base, extra)
 	}
 	if net.ParseIP(hostOnly(target)) == nil {
-		extra, err := s.Vantage.Measure(ctx, probe.Query{Kind: probe.KindDNS, Target: hostOnly(target), DNSName: hostOnly(target), Limit: 1, Control: 1})
+		extra, err := s.Vantage.Measure(ctx, probe.Query{Kind: probe.KindDNS, Target: hostOnly(target), DNSName: hostOnly(target), Limit: gfw.Quorum, Control: 1})
+		if errors.Is(err, probe.ErrQuota) {
+			return base, err
+		}
 		if err == nil {
 			base = mergeByProbe(base, extra)
 		}
@@ -561,7 +580,10 @@ func (s *Service) measure(ctx context.Context, target string, ports []int) ([]pr
 		}
 	}
 	if wantHTTP {
-		extra, err := s.Vantage.Measure(ctx, probe.Query{Kind: probe.KindHTTP, Target: target, Port: 443, Limit: 1, Control: 1})
+		extra, err := s.Vantage.Measure(ctx, probe.Query{Kind: probe.KindHTTP, Target: target, Port: 443, Limit: gfw.Quorum, Control: 1})
+		if errors.Is(err, probe.ErrQuota) {
+			return base, err
+		}
 		if err == nil {
 			base = mergeByProbe(base, extra)
 		}

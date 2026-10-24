@@ -83,6 +83,7 @@ func Main(args []string) int {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
 	}
+	rep = svc.WithSnapshot(rep)
 	body, _ := render(opts.format, rep)
 	fmt.Fprint(os.Stdout, string(body))
 	return app.ExitCode(rep.Verdict)

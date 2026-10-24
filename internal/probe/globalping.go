@@ -44,6 +44,9 @@ func (g Globalping) Measure(ctx context.Context, q Query) ([]Sample, error) {
 	if err := g.wait(ctx); err != nil {
 		return nil, err
 	}
+	if err := g.reserve(time.Now()); err != nil {
+		return nil, err
+	}
 	body := g.request(q)
 	raw, _ := json.Marshal(body)
 	b, status, hdr, err := g.do(ctx, client, http.MethodPost, base+"/measurements", raw)
@@ -206,6 +209,9 @@ func (g Globalping) request(q Query) map[string]any {
 	limit := q.Limit
 	if limit <= 0 {
 		limit = 1
+	}
+	if limit > 50 {
+		limit = 50
 	}
 	var locs []map[string]any
 	if len(q.Countries) > 0 {
@@ -400,13 +406,17 @@ func decodeGP(doc gpDoc, q Query) []Sample {
 		if loss > 1 {
 			loss = loss / 100
 		}
+		probeFailed := r.Result.Status == "failed" && strings.TrimSpace(r.Result.Raw) == "" && r.Result.Stats.Avg == 0 && r.Result.Stats.Loss == 0 && len(r.Result.Hops) == 0 && len(r.Result.Answers) == 0
+		id := strconv.Itoa(asn) + "/" + r.Probe.City
+		healthy := !probeFailed && DefaultHealth.Healthy(id)
+		DefaultHealth.Observe(id, !probeFailed)
 		s := Sample{
 			Provider: "globalping",
 			Network:  netw,
 			ASN:      asn,
 			City:     r.Probe.City,
 			Country:  r.Probe.Country,
-			Healthy:  r.Result.Status != "failed",
+			Healthy:  healthy,
 			Loss:     loss,
 			RTTMS:    r.Result.Stats.Avg,
 		}

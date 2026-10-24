@@ -12,13 +12,16 @@ import (
 
 // Engine is an in-memory multi-source prefix index.
 // Each source has its own bart table so a lookup is a handful of LPM queries
-// and does not touch disk.
+// and does not touch disk. Large feeds (DB-IP, prefix-to-ASN) can instead sit
+// in a memory-mapped snapshot; Lookup consults that table under the same lock.
 type Engine struct {
-	mu     sync.RWMutex
-	tables map[string]*bart.Table[Rec]
-	meta   []SourceMeta
-	byID   map[string]int
-	mmdb   *maxminddb.Reader
+	mu          sync.RWMutex
+	tables      map[string]*bart.Table[Rec]
+	mapped      map[string]*mappedTable
+	prefixTimes map[string]time.Time
+	meta        []SourceMeta
+	byID        map[string]int
+	mmdb        *maxminddb.Reader
 }
 
 // New builds an engine from the bundled offline snapshot.
@@ -112,6 +115,7 @@ func (e *Engine) Reload(meta []SourceMeta, rows []SourceRow) {
 	e.tables = next.tables
 	e.meta = next.meta
 	e.byID = next.byID
+	e.prefixTimes = next.prefixTimes
 }
 
 type snapshot struct {
@@ -156,7 +160,63 @@ func (e *Engine) load(s snapshot) {
 			e.meta[i].Rows = counts[e.meta[i].ID]
 		}
 		e.meta[i].Stale = Stale(e.meta[i], time.Now().UTC())
+		e.notePrefixLocked(e.meta[i].ID, e.meta[i].UpdatedAt)
 	}
+}
+
+// SnapshotAge is the build time of the prefix snapshot and how many seconds
+// old it is. DB-IP and the prefix-to-ASN table are the clock; the older of
+// the two wins. Bundled data uses those sources' UpdatedAt.
+func (e *Engine) SnapshotAge(now time.Time) (time.Time, int64) {
+	if e == nil {
+		return time.Time{}, 0
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	at := e.prefixAtLocked()
+	if at.IsZero() {
+		return time.Time{}, 0
+	}
+	sec := int64(now.Sub(at).Seconds())
+	if sec < 0 {
+		sec = 0
+	}
+	return at.UTC(), sec
+}
+
+func (e *Engine) notePrefixLocked(id string, at time.Time) {
+	if at.IsZero() || (id != "bgp" && id != "dbip_lite") {
+		return
+	}
+	if e.prefixTimes == nil {
+		e.prefixTimes = map[string]time.Time{}
+	}
+	e.prefixTimes[id] = at.UTC()
+}
+
+func (e *Engine) prefixAtLocked() time.Time {
+	var oldest time.Time
+	for _, id := range []string{"bgp", "dbip_lite"} {
+		t, ok := e.prefixTimes[id]
+		if !ok || t.IsZero() {
+			continue
+		}
+		if oldest.IsZero() || t.Before(oldest) {
+			oldest = t
+		}
+	}
+	if !oldest.IsZero() {
+		return oldest
+	}
+	for _, m := range e.meta {
+		if !m.Enabled || m.UpdatedAt.IsZero() {
+			continue
+		}
+		if oldest.IsZero() || m.UpdatedAt.Before(oldest) {
+			oldest = m.UpdatedAt
+		}
+	}
+	return oldest
 }
 
 // Sources returns a copy of source metadata with staleness evaluated at now.
@@ -211,7 +271,15 @@ func (e *Engine) Lookup(ip netip.Addr) Profile {
 	defer e.mu.RUnlock()
 	var hits []Hit
 	for id, tbl := range e.tables {
+		if e.mapped[id] != nil {
+			continue
+		}
 		if rec, ok := tbl.Lookup(ip); ok {
+			hits = append(hits, Hit{Source: id, Rec: rec})
+		}
+	}
+	for id, mt := range e.mapped {
+		if rec, ok := mt.lookup(ip); ok {
 			hits = append(hits, Hit{Source: id, Rec: rec})
 		}
 	}
@@ -262,6 +330,9 @@ func fillMMDB(p *Profile, db *maxminddb.Reader, ip netip.Addr) {
 func (e *Engine) Covering(source string, pfx netip.Prefix) (Rec, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	if mt := e.mapped[source]; mt != nil {
+		return mt.lookup(pfx.Addr())
+	}
 	tbl := e.tables[source]
 	if tbl == nil {
 		return Rec{}, false
@@ -304,15 +375,12 @@ func (e *Engine) Composition(cidr string) PrefixComposition {
 	var best Rec
 	bestSpec := -1
 	bestClass := "unknown"
-	for _, tbl := range e.tables {
-		rec, ok := tbl.Lookup(base)
+	considerTable := func(rec Rec, ok bool) {
 		if !ok {
-			continue
+			return
 		}
 		spec := prefixLen(rec.Prefix)
 		cls := classOf(rec)
-		// Equal-length rows come from different sources. Map iteration order
-		// must not decide the class, so a hosting or proxy signal wins a tie.
 		if spec > bestSpec || (spec == bestSpec && classRank(cls) > classRank(bestClass)) {
 			best = rec
 			bestSpec = spec
@@ -321,6 +389,17 @@ func (e *Engine) Composition(cidr string) PrefixComposition {
 		for _, f := range rec.Flags {
 			seenFlags[f]++
 		}
+	}
+	for id, tbl := range e.tables {
+		if e.mapped[id] != nil {
+			continue
+		}
+		rec, ok := tbl.Lookup(base)
+		considerTable(rec, ok)
+	}
+	for _, mt := range e.mapped {
+		rec, ok := mt.lookup(base)
+		considerTable(rec, ok)
 	}
 	if bestSpec >= 0 {
 		consider(best)
@@ -427,45 +506,55 @@ func (e *Engine) ASNInfo(asn int) ASNInfo {
 	info := ASNInfo{ASN: asn, PrefixesV4: []string{}, PrefixesV6: []string{}, Upstreams: []int{}}
 	seenP := map[string]struct{}{}
 	seenU := map[int]struct{}{}
-	for source, tbl := range e.tables {
-		for pfx, rec := range tbl.All() {
-			if rec.ASN != asn && rec.UpstreamASN != asn {
-				continue
-			}
-			if rec.ASN == asn {
-				if info.Org == "" {
-					info.Org = rec.Org
-				}
-				if info.CC == "" {
-					info.CC = firstNonEmpty(rec.AnnouncedCC, rec.CC, rec.RegisteredCC)
-				}
-				if info.Type == "" {
-					info.Type = rec.ASType
-				}
-				if rec.Eyeball > info.EyeballUsers {
-					info.EyeballUsers = rec.Eyeball
-				}
-				if source == "peeringdb" && rec.ASType != "" {
-					info.PeeringDBType = rec.ASType
-					info.Type = rec.ASType
-				}
-				ps := pfx.String()
-				if _, ok := seenP[ps]; !ok {
-					seenP[ps] = struct{}{}
-					if pfx.Addr().Is4() {
-						info.PrefixesV4 = append(info.PrefixesV4, ps)
-					} else {
-						info.PrefixesV6 = append(info.PrefixesV6, ps)
-					}
-				}
-				if rec.UpstreamASN != 0 {
-					if _, ok := seenU[rec.UpstreamASN]; !ok {
-						seenU[rec.UpstreamASN] = struct{}{}
-						info.Upstreams = append(info.Upstreams, rec.UpstreamASN)
-					}
-				}
+	absorb := func(source string, pfx netip.Prefix, rec Rec) {
+		if rec.ASN != asn && rec.UpstreamASN != asn {
+			return
+		}
+		if rec.ASN != asn {
+			return
+		}
+		if info.Org == "" {
+			info.Org = rec.Org
+		}
+		if info.CC == "" {
+			info.CC = firstNonEmpty(rec.AnnouncedCC, rec.CC, rec.RegisteredCC)
+		}
+		if info.Type == "" {
+			info.Type = rec.ASType
+		}
+		if rec.Eyeball > info.EyeballUsers {
+			info.EyeballUsers = rec.Eyeball
+		}
+		if source == "peeringdb" && rec.ASType != "" {
+			info.PeeringDBType = rec.ASType
+			info.Type = rec.ASType
+		}
+		ps := pfx.String()
+		if _, ok := seenP[ps]; !ok {
+			seenP[ps] = struct{}{}
+			if pfx.Addr().Is4() {
+				info.PrefixesV4 = append(info.PrefixesV4, ps)
+			} else {
+				info.PrefixesV6 = append(info.PrefixesV6, ps)
 			}
 		}
+		if rec.UpstreamASN != 0 {
+			if _, ok := seenU[rec.UpstreamASN]; !ok {
+				seenU[rec.UpstreamASN] = struct{}{}
+				info.Upstreams = append(info.Upstreams, rec.UpstreamASN)
+			}
+		}
+	}
+	for source, tbl := range e.tables {
+		if e.mapped[source] != nil {
+			continue
+		}
+		for pfx, rec := range tbl.All() {
+			absorb(source, pfx, rec)
+		}
+	}
+	for source, mt := range e.mapped {
+		mt.each(func(pfx netip.Prefix, rec Rec) { absorb(source, pfx, rec) })
 	}
 	return info
 }

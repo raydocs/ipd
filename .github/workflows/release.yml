@@ -1,0 +1,41 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+  id-token: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - uses: sigstore/cosign-installer@v3
+      - name: build
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/ipd-linux-amd64 ./cmd/ipd
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/ipd-linux-arm64 ./cmd/ipd
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/ipd-darwin-amd64 ./cmd/ipd
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/ipd-darwin-arm64 ./cmd/ipd
+      - name: checksums
+        working-directory: dist
+        run: sha256sum ipd-* > SHA256SUMS
+      - name: sign
+        working-directory: dist
+        run: |
+          for f in ipd-* SHA256SUMS; do
+            cosign sign-blob --yes "$f" \
+              --output-signature "$f.sig" \
+              --output-certificate "$f.pem"
+          done
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "SHA256SUMS lists every binary. Each file has a cosign keyless signature (.sig) and certificate (.pem) from GitHub OIDC."

@@ -16,4 +16,6 @@ jobs:
         with:
           node-version: "22"
       - run: go test ./...
+      - name: web bundle has no external URLs or third-party scripts
+        run: go test ./web -count=1 -run TestBundlePrivacy
       - run: node --test web/judge.test.mjs
