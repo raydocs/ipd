@@ -15,7 +15,7 @@
 | PR | 内容 | 当前状态 |
 | --- | --- | --- |
 | [#13](https://github.com/raydocs/ipd/pull/13) | Raw trace 探针关联及 socket adapter | 已同步 main `2518c28`，冲突集成检查及 Go/Node/race 通过，已 Ready；未验证 Linux 实际 raw 收发 |
-| [#15](https://github.com/raydocs/ipd/pull/15) | 远程订阅验证与固定连接 | 原修复独立审查通过；正在同步 main，复测后转 Ready；不是全产品外连安全认证 |
+| [#15](https://github.com/raydocs/ipd/pull/15) | 远程订阅验证与固定连接 | 已同步 main `63db1a5`，冲突集成检查、Go/Node/race 与 CI 通过，已 Ready；不是全产品外连安全认证 |
 | [#20](https://github.com/raydocs/ipd/pull/20) | 普通 feed last-good 单文件发布 | 两轮独立审查通过；同步 main `1ca8f3d` 无逻辑变更，Go/Node/race 通过，已 Ready；streamRows/断电/多 writer 不在保证内 |
 | [#16](https://github.com/raydocs/ipd/pull/16)、[#18](https://github.com/raydocs/ipd/pull/18) | DNS 会话与编码路径日志隐私修复 | Draft；#16 必须包含 #18 修复才闭合已知缺口；真实 NS 委派/浏览器链路未验证 |
 | [#17](https://github.com/raydocs/ipd/pull/17)、[#19](https://github.com/raydocs/ipd/pull/19) | HTTP/SOCKS5 出口测量与 YAML 原树校验 | Draft；#17 必须包含 #19 修复；真实代理与全协议尚未验证 |
