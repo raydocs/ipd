@@ -29,6 +29,7 @@ var (
 	ErrRunnerReadiness  = errors.New("runner listener readiness timed out")
 	ErrRunnerStorage    = errors.New("runner private storage unavailable")
 	ErrRunnerCleanup    = errors.New("runner private cleanup incomplete; retained resources require local attention")
+	ErrRunnerStopped    = errors.New("runner explicitly stopped")
 	ErrRunnerOwnership  = errors.New("runner listener ownership could not be verified")
 )
 
@@ -61,18 +62,21 @@ type Mihomo = ExecRunner
 var _ Runner = (*ExecRunner)(nil)
 
 type execRun struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	done      chan struct{}
-	ready     chan startResult
-	mu        sync.RWMutex
-	backend   Backend
-	endpoints map[string]Endpoint
-	err       error
-	cause     error
-	invalid   chan struct{}
-	starting  bool
-	startup   context.Context
+	ctx        context.Context
+	cancel     context.CancelFunc
+	done       chan struct{}
+	ready      chan startResult
+	mu         sync.RWMutex
+	backend    Backend
+	endpoints  map[string]Endpoint
+	err        error
+	cause      error
+	invalid    chan struct{}
+	starting   bool
+	startup    context.Context
+	owners     []ownedEndpoint
+	generation uint64
+	query      ownerQuery
 }
 type startResult struct {
 	err error
@@ -83,7 +87,13 @@ type coreProcess struct {
 }
 
 func (m *ExecRunner) Start(ctx context.Context, configPath string) (map[string]string, error) {
-	return m.start(ctx, func() ([]byte, error) {
+	socks, _, err := m.StartWithHandle(ctx, configPath)
+	return socks, err
+}
+
+// StartWithHandle returns a capability bound to this exact run, never a restart.
+func (m *ExecRunner) StartWithHandle(ctx context.Context, configPath string) (map[string]string, *RunHandle, error) {
+	return m.startWithHandle(ctx, func() ([]byte, error) {
 		st, err := os.Stat(configPath)
 		if err != nil || !st.Mode().IsRegular() {
 			return nil, ErrRunnerConfig
@@ -98,13 +108,19 @@ func (m *ExecRunner) Start(ctx context.Context, configPath string) (map[string]s
 			return nil, ErrRunnerConfig
 		}
 		return b, nil
-	})
+	}, nil)
 }
 
 // StartFile preserves original-YAML validation when Run has parsed a File. It
 // does not change the Runner interface; custom runners retain the old path API.
 func (m *ExecRunner) StartFile(ctx context.Context, f File) (map[string]string, error) {
-	return m.start(ctx, func() ([]byte, error) {
+	socks, _, err := m.StartFileWithHandle(ctx, f)
+	return socks, err
+}
+
+// StartFileWithHandle preserves original-document validation and run binding.
+func (m *ExecRunner) StartFileWithHandle(ctx context.Context, f File) (map[string]string, *RunHandle, error) {
+	return m.startWithHandle(ctx, func() ([]byte, error) {
 		if f.runnerURI {
 			return nil, ErrRunnerUnsupported
 		}
@@ -116,17 +132,17 @@ func (m *ExecRunner) StartFile(ctx context.Context, f File) (map[string]string, 
 			return nil, ErrRunnerConfig
 		}
 		return b, nil
-	})
+	}, nil)
 }
 
-func (m *ExecRunner) start(ctx context.Context, load func() ([]byte, error)) (map[string]string, error) {
+func (m *ExecRunner) startWithHandle(ctx context.Context, load func() ([]byte, error), query ownerQuery) (map[string]string, *RunHandle, error) {
 	m.mu.Lock()
 	if m.run != nil {
 		select {
 		case <-m.run.done:
 		default:
 			m.mu.Unlock()
-			return nil, ErrRunnerBusy
+			return nil, nil, ErrRunnerBusy
 		}
 	}
 	budget, startup := m.Budget, m.StartupTimeout
@@ -137,7 +153,7 @@ func (m *ExecRunner) start(ctx context.Context, load func() ([]byte, error)) (ma
 		startup = 10 * time.Second
 	}
 	runCtx, cancel := context.WithTimeout(ctx, budget)
-	r := &execRun{ctx: runCtx, cancel: cancel, done: make(chan struct{}), ready: make(chan startResult, 1), invalid: make(chan struct{}), starting: true}
+	r := &execRun{ctx: runCtx, cancel: cancel, done: make(chan struct{}), ready: make(chan startResult, 1), invalid: make(chan struct{}), starting: true, query: query}
 	m.run = r
 	bin, root, backend, executables := m.Bin, m.TempRoot, m.Backend, maps.Clone(m.Executables)
 	m.mu.Unlock()
@@ -149,14 +165,15 @@ func (m *ExecRunner) start(ctx context.Context, load func() ([]byte, error)) (ma
 	result := <-r.ready
 	if result.err != nil {
 		<-r.done
-		return nil, r.terminalError()
+		return nil, nil, r.terminalError()
 	}
 	socks, err := r.acceptReady()
 	if err != nil {
 		<-r.done
-		return nil, r.terminalError()
+		return nil, nil, r.terminalError()
 	}
-	return socks, nil
+	go r.monitorOwnership()
+	return socks, &RunHandle{run: r}, nil
 }
 
 // Stop cancels startup or an active batch, reaps every child, and waits until
@@ -167,7 +184,7 @@ func (m *ExecRunner) Stop() {
 	r := m.run
 	m.mu.Unlock()
 	if r != nil {
-		r.invalidate(context.Canceled)
+		r.stop()
 		<-r.done
 	}
 }
@@ -269,6 +286,7 @@ func (r *execRun) execute(bin, root string, requested Backend, executables map[B
 	// Invalidate before Kill/Wait/RemoveAll defers, including startup failures.
 	defer func() { r.invalidate(resultErr) }()
 	endpoints := map[string]Endpoint{}
+	var owners []ownedEndpoint
 	for i, proxy := range proxies {
 		if err := startupCtx.Err(); err != nil {
 			return readinessError(r.ctx)
@@ -317,6 +335,7 @@ func (r *execRun) execute(bin, root string, requested Backend, executables map[B
 		}
 		credentials := url.UserPassword(user, password)
 		endpoints[names[i]] = Endpoint{Backend: driver.ID(), SOCKS: (&url.URL{Scheme: "socks5", Host: addr, User: credentials}).String(), HTTP: (&url.URL{Scheme: "http", Host: addr, User: credentials}).String()}
+		owners = append(owners, ownedEndpoint{name: names[i], endpoint: endpoints[names[i]], child: p, port: port})
 	}
 	if err := r.failure(); err != nil {
 		return err
@@ -325,13 +344,16 @@ func (r *execRun) execute(bin, root string, requested Backend, executables map[B
 	for i, p := range processes {
 		u, _ := url.Parse(endpoints[names[i]].SOCKS)
 		port, _ := strconv.Atoi(u.Port())
-		if err := runnerRequireOwner(startupCtx, p, port); err != nil {
+		if err := r.requireOwner(startupCtx, p, port); err != nil {
 			if startupCtx.Err() != nil {
 				return readinessError(r.ctx)
 			}
 			return err
 		}
 	}
+	r.mu.Lock()
+	r.owners = owners // Immutable single-run identity, installed before publication.
+	r.mu.Unlock()
 	if err := r.publish(endpoints); err != nil {
 		return err
 	}
@@ -361,7 +383,7 @@ func waitRunnerReady(ctx context.Context, r *execRun, addr, user, password strin
 			return readinessError(r.ctx)
 		default:
 		}
-		owned, err := runnerOwnsListener(ctx, child.cmd.Process.Pid, port)
+		owned, err := r.queryListener(ctx, child.cmd.Process.Pid, port)
 		if ctx.Err() != nil {
 			if err := r.failure(); err != nil {
 				return err
@@ -377,14 +399,14 @@ func waitRunnerReady(ctx context.Context, r *execRun, addr, user, password strin
 			return err
 		}
 		if owned {
-			if err := runnerRequireOwner(ctx, child, port); err != nil {
+			if err := r.requireOwner(ctx, child, port); err != nil {
 				if ctx.Err() != nil {
 					return readinessError(r.ctx)
 				}
 				return err
 			}
 			if probeRunnerSOCKS(ctx, addr, user, password) == nil && probeRunnerHTTP(ctx, addr) == nil {
-				err := runnerRequireOwner(ctx, child, port)
+				err := r.requireOwner(ctx, child, port)
 				if ctx.Err() != nil {
 					return readinessError(r.ctx)
 				}
@@ -404,7 +426,7 @@ func waitRunnerReady(ctx context.Context, r *execRun, addr, user, password strin
 	}
 }
 
-func runnerRequireOwner(ctx context.Context, child coreProcess, port int) error {
+func (r *execRun) requireOwner(ctx context.Context, child coreProcess, port int) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -413,7 +435,7 @@ func runnerRequireOwner(ctx context.Context, child coreProcess, port int) error 
 		return ErrRunnerExit
 	default:
 	}
-	owned, err := runnerOwnsListener(ctx, child.cmd.Process.Pid, port)
+	owned, err := r.queryListener(ctx, child.cmd.Process.Pid, port)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
