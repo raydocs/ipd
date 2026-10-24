@@ -4,15 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"strings"
 	"sync"
-	"time"
 
 	"ipd/internal/nodes"
-	"ipd/internal/privacy"
 )
 
 // ErrNodeMeasurementUnavailable lets an injected checker report missing probing
@@ -161,45 +155,4 @@ func (s *Service) nodesUnavailable(count, measured int, reason string) Report {
 		Sources:  []Source{{ID: "local"}},
 		CachedAt: s.now(),
 	}
-}
-
-func readSource(ctx context.Context, source, proxy string) (string, error) {
-	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
-		if !privacy.IsProbeTargetAllowed(hostOf(source)) && strings.Contains(source, "169.254.169.254") {
-			return "", fmt.Errorf("refusing metadata address")
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
-		if err != nil {
-			return "", err
-		}
-		client := &http.Client{Timeout: 20 * time.Second}
-		resp, err := client.Do(req)
-		if err != nil {
-			return "", err
-		}
-		defer resp.Body.Close()
-		b, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-		if err != nil {
-			return "", err
-		}
-		_ = proxy
-		return string(b), nil
-	}
-	b, err := os.ReadFile(source)
-	if err != nil {
-		// allow the source itself to be the document (inline YAML or URI)
-		if strings.Contains(source, "proxies:") || strings.Contains(source, "://") {
-			return source, nil
-		}
-		return "", err
-	}
-	return string(b), nil
-}
-
-func hostOf(raw string) string {
-	parts := strings.Split(strings.TrimPrefix(strings.TrimPrefix(raw, "https://"), "http://"), "/")
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.Split(parts[0], ":")[0]
 }
