@@ -119,7 +119,9 @@ Neither core accepts a portable inherited socket here, so a bind race remains.
 **SOCKS credential acceptance is client authentication, not server identity.**
 Kernel evidence must establish the listening socket's child ownership before any
 protocol/authentication probe, after readiness, and again for the entire batch
-immediately before endpoints are published:
+immediately before endpoints are published. The live increment also repeats these
+checks through a single-run handle and a bounded background monitor (see
+[LIVE_OWNERSHIP.md](LIVE_OWNERSHIP.md)):
 
 - Darwin requires the existing, root-owned non-writable-by-group/others system
   `/usr/sbin/lsof`, fixed argv, no inherited environment and NUL-delimited fields.
@@ -139,8 +141,9 @@ SOCKS5 random-token authentication and an HTTP 407 then check protocol readiness
 only. A collision fails closed with no retry/fallback, CONNECT or upstream
 measurement. Kernel checks attest ownership at those instants; URLs are not
 perpetual capabilities and become invalid after child teardown. Trusted binaries
-must not delegate/inherit their listening fd to other processes or deliberately
-change listeners; same-user process tampering is outside this trusted-core model.
+must not delegate/inherit their listening fd to other processes; same-user
+process tampering is outside this trusted-core model. Live listener loss fails
+closed when observed, but fast same-PID rebinding between samples can be missed.
 Credentials in endpoint URLs are secrets: do not log, serialize to public UI,
 or expose them in error messages.
 
@@ -172,7 +175,9 @@ manual local attention under the trusted `TempRoot` (or system temp directory);
 do not blindly remove another session's private directories. Check retained state
 only after confirming all owned children are reaped; repeated Stop preserves the
 warning rather than claiming successful cleanup. `Err()` otherwise reports
-`context.Canceled` for an ordinary explicit Stop. A runner can restart
+`ErrRunnerStopped` joined with `context.Canceled` for an ordinary explicit Stop.
+A pending lifetime cancellation/deadline is checked synchronously first and is
+not relabeled as normal Stop; cleanup errors remain separately detectable. A runner can restart
 after teardown, but another active Start is rejected. Retained endpoint URLs
 are invalid after teardown. Only the newly created owned directory is removed;
 source files, unrelated siblings and symlink targets are never deleted.

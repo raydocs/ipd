@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -123,16 +124,46 @@ func main() {
 	if mode == "fixture-late-exit" {
 		go func() { time.Sleep(800 * time.Millisecond); os.Exit(43) }()
 	}
+	var live *liveFixture
+	if mode == "fixture-live" {
+		live = &liveFixture{release: make(chan struct{})}
+		go live.control(*dir, ln)
+	}
 	for {
 		c, err := ln.Accept()
 		if err != nil {
+			if live != nil {
+				select {}
+			} // Listener loss deliberately leaves the PID/tunnels alive.
 			return
 		}
-		go serve(c, l.Users[0].Username, l.Users[0].Password, fmt.Sprint(p["server"]), mode)
+		go serve(c, l.Users[0].Username, l.Users[0].Password, fmt.Sprint(p["server"]), mode, live)
 	}
 }
 
-func serve(c net.Conn, user, pass, marker, mode string) {
+// File commands and acknowledgements order attacks by events, not elapsed sleeps.
+type liveFixture struct {
+	release chan struct{}
+	once    sync.Once
+}
+
+func (l *liveFixture) control(dir string, ln net.Listener) {
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	closed := false
+	for range tick.C {
+		if _, err := os.Stat(filepath.Join(dir, "close-listener")); err == nil && !closed {
+			_ = ln.Close()
+			closed = true
+			_ = os.WriteFile(filepath.Join(dir, "listener-closed"), nil, 0600)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "release-tunnel")); err == nil {
+			l.once.Do(func() { close(l.release) })
+		}
+	}
+}
+
+func serve(c net.Conn, user, pass, marker, mode string, live *liveFixture) {
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
 	r := bufio.NewReader(c)
@@ -209,6 +240,14 @@ func serve(c net.Conn, user, pass, marker, mode string) {
 	}
 	defer req.Body.Close()
 	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+	if live != nil && req.Method == "CONNECT" && req.Header.Get("Proxy-Authorization") == auth {
+		_ = c.SetDeadline(time.Time{})
+		_, _ = io.WriteString(c, "HTTP/1.1 200 Connection Established\r\n\r\n")
+		_ = os.WriteFile(filepath.Join(os.Getenv("TMPDIR"), "tunnel-open"), nil, 0600)
+		<-live.release
+		_, _ = io.WriteString(c, "fixture-positive")
+		return
+	}
 	status, body := 200, marker
 	if req.Header.Get("Proxy-Authorization") != auth {
 		_ = os.WriteFile(filepath.Join(os.Getenv("TMPDIR"), "r2-http-probed"), []byte("ready"), 0600)

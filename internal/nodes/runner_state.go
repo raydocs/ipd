@@ -15,6 +15,7 @@ func (r *execRun) invalidateLocked(cause error) bool {
 	if err := r.ctx.Err(); err != nil && !errors.Is(cause, err) {
 		cause = errors.Join(cause, err)
 	}
+	r.generation++
 	r.cause = cause
 	r.err = cause
 	r.endpoints = nil
@@ -150,4 +151,15 @@ func (r *execRun) finish(err error) {
 		}
 	}
 	close(r.done)
+}
+
+// A pending lifetime cancellation/deadline must not be relabeled as a normal
+// Stop merely because its AfterFunc has not been scheduled yet.
+func (r *execRun) stop() {
+	r.mu.Lock()
+	if r.validityLocked() == nil {
+		r.invalidateLocked(errors.Join(ErrRunnerStopped, context.Canceled))
+	}
+	r.mu.Unlock()
+	r.cancel()
 }
