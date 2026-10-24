@@ -31,6 +31,33 @@
 | 5 | P2 | [#13 Raw traceroute 报文关联](https://github.com/raydocs/ipd/pull/13) | 通过 `542e27b`；关联当前探针并修复 ICMP socket 包装 panic，第二轮独立审查 approve |
 | 5 | P2 | [#14 HTTP OpenAPI 契约](https://github.com/raydocs/ipd/pull/14) | 通过 `c173c78`；参数、媒体与同步 job 语义补齐；nullable/MCP 400 返修后第二轮独立审查 approve |
 | 5 | P1 | [#15 远程订阅安全读取](https://github.com/raydocs/ipd/pull/15) | 通过 `11b7e23`；独立安全审查 approve；全地址校验、每跳验证、固定地址连接与严格限额 |
+| 6 | P1 | [#16 权威 DNS 观测会话](https://github.com/raydocs/ipd/pull/16) | Draft `32c6f99`，叠加 #14；第二轮 block：编码路径日志泄漏 P2、过时参数说明 P3 未闭环，未验收 |
+| 6 | P1 | [#17 HTTP/SOCKS5 节点出口实测](https://github.com/raydocs/ipd/pull/17) | Draft `773ea38`，叠加 #10；第二轮 approve-with-fixes，YAML 别名键覆盖 P2 未闭环，不作完全验收 |
+
+## 第六轮取舍与信号质量
+
+继续优先补真实采集链路：#16 是默认关闭、短期 token 隔离的后端 DNS 会话，#17 是
+CLI 显式选择的本地 HTTP/SOCKS5 出口 IP 测量，不是全协议 Clash runner 或浏览器测试。
+必要依赖分别为 #14 的 HTTP 契约与 #10 的默认未知态；两个 Draft PR 仅包含各自增量。
+
+X 搜索证据受限：现有搜索客户端认证失败（未重新登录或扫描浏览器 cookie），原始帖网页返回 403。
+[2026-10-20 的二手文章](https://www.yokon.uk/posts/claude-anti-ban) 标注来源为
+[X 原帖](https://x.com/Rivoclass/status/2111754234320613717)，反映网页、CLI、DNS 和 IPv6 路径
+难以区分的使用困惑；原帖未独立核验，不算近期 X 全量样本，更不能证明其中封号因果主张。
+这类需求信号与 [ip.cx 的 DNS 观测入口](https://ip.cx/dnsleak)、
+[IPPure 的泄漏及多出口功能说明](https://ippure.com/en/faq) 一起用于选题，而不用于判定用户账号安全。
+
+**第六轮尚无完全验收项。** 两项均实现并追加过返修，但第二轮仍有开放发现。
+按两轮审查上限，将残余 P2/P3 写入 Draft PR 并交接，不继续用重复审查制造通过结论：
+
+- #16：四类修正通过，但编码斜杠路径与 mux 清理顺序仍不同，可能把 bearer/调用者写入
+  SQLite；另有 token 参数的旧“仅回显”描述。原先五类普通回归通过不代表编码路径已安全。
+- #17：普通路径配置与非法列表处理已修；YAML 别名/语义重复键仍可能在 map 解码时覆盖
+  原始配置并继续测量。应先校验原始 `yaml.Node`，不能宣称封闭键校验已完整。
+
+两项修正版与前五轮的临时组合通过 Go 全套、Node、十个相关包 race、构建和 Linux route
+交叉编译；但总控针对上述残余分别补探针，均实际失败。**已有组合测试绿色，不等于验收通过。**
+未推送组合产品分支，两个 Draft 仍无合并/部署授权。
 
 ## 第五轮重新评估与取舍
 
@@ -81,6 +108,18 @@ GOOS=linux GOARCH=amd64 go test -c ./internal/route -o /tmp/ipd-route-linux.test
 交叉编译，全部通过。#13/#14 各经两轮、#15 经一轮独立新上下文审查后验收；
 没有执行真实 Linux raw socket、生产订阅站点或账号测试。
 
+第六轮额外组合检查（不构成 Draft 验收）：
+
+```sh
+go test -count=1 ./...
+node --test web/judge.test.mjs
+go test -race -count=1 ./internal/api ./internal/app ./internal/cli \
+  ./internal/config ./internal/leak ./internal/lookup ./internal/mcp \
+  ./internal/nodes ./internal/probe ./internal/route
+```
+
+这些命令通过；另加的编码路径与 YAML 别名键补充探针失败，其缺口和修复建议已进入 PR 正文。
+
 总控实际发现并退回修复的缺口：
 
 - #3：仅同步组引用仍会留下直接指向旧节点名的规则；补规则与拨号引用，以及实际分配名称。
@@ -101,17 +140,24 @@ GOOS=linux GOARCH=amd64 go test -c ./internal/route -o /tmp/ipd-route-linux.test
 
 1. **Clash 真实批量测量仍未接通。** #3 修复导出，#10 修复误报，但默认路径仍不会启动
    mihomo、分配逐节点通道或实测出口/AI 解锁。需要独立 runner/checker 集成、取消与清理、
-   凭据隔离测试；不能因安装了外部二进制就宣称功能可用。
+   凭据隔离测试；不能因安装了外部二进制就宣称功能可用。#17 的显式 HTTP/SOCKS5 出口查询
+   仅是候选子集，尚未完全验收，不提供全协议、AI 解锁或质量分数。
 2. **其余网络目标及写入安全边界仍需专项审查。** #15 仅闭合远程订阅读取的地址校验、
    重定向和 DNS 固定连接边界，不是全产品 SSRF 认证；其他探测入口、webhook/watch 权限及外连、
    完整订阅导出的秘密处理仍需审查。其静态 IANA 策略需维护，配置代理会明确拒绝而非绕过固定连接。
 3. **生产规模数据证据不足。** 完整线上数据的体积、来源许可、更新失败可观测性与 last-good
    保留需验证；#1 的 400,001 行合成快照性能不是生产文件实测。小型住宅留出集也不是大规模精度证明。
 4. **账号诊断的缺测仍需真正的采集实现。** 默认 DNS 观测及部分 egress/双栈输入不足；
-   #7 会如实弃权，重跑命令不会凭空产生观测。应增加可信采集而非降低 safe 门槛。
+   #7 会如实弃权，重跑命令不会凭空产生观测。#16 的 DNS 后端会话仍因隐私缺口未验收，
+   也没有公网 NS 委派或浏览器路径证据；应增加可信采集而非降低 safe 门槛。
 
 ### P2
 
+- **开放阻碍：节点实测的 YAML 键完整性。** #17 第二轮发现别名/语义重复键可在 map 解码时覆盖坏类型
+   或原始列表，随后仍发包。总控补测同样复现未拒绝；建议先校验原始 `yaml.Node` 的键再转换。
+   已写入 Draft PR，按两轮审查上限记录为开放风险；组合绿测不等于此问题已修。
+- **开放阻碍：DNS bearer 路径隐私。** #16 第二轮仍复现编码斜杠与 dot 段组合绕过日志排除，
+  SQLite 会保留 bearer 和调用者。需按 mux 的 escaped 分段顺序处理敏感前缀，连同 P3 参数说明修正。
 1. **受控 Linux 路由运行验证。** #13 已用跨平台报文夹具处理 #5 遗留的探针关联缺口，
    并修复阻断 ICMP 路径的包装 panic；仍未实跑 raw socket/TTL/收发。ICMP 没有认证，
    最小引用只提供有限标识，不能防止已观察当前标识者伪造回复，不能当成真实网络认证。
@@ -138,6 +184,11 @@ GOOS=linux GOARCH=amd64 go test -c ./internal/route -o /tmp/ipd-route-linux.test
 `platformTrace`/UDP 接收及错误处理，采用 #13 的 ICMP/TCP 段、adapter 和 portable parser。
 #15 与 #10 的 `nodes.go` 重叠：仅移走旧 reader/imports、加入新安全 reader，保留 #10 的默认
 测量弃权，不可整文件覆盖。第五轮总控组合已按这两条逐段整合，#14 使用返修后的契约版本。
+
+第六轮只作候选组合：#16 的 Service recorder 字段、API/schema、aux 接线与前轮代码并存；
+#17 的 nodes 分发/helper 与 #9 latency helper 并存，新增用法使用 #11 的 `cliError` 及英文词典，
+测试适配三返回值 `parseGlobals`。保留既有安全 reader、默认弃权和 SVG 无路径删除策略。
+以上整合不修复第六轮开放发现，也不是推荐采用这两个 Draft。
 
 先审阅独立 PR，再在候选组合上运行完整两套测试与相关 race 检查；不要把本清单视为合并授权。
 留意 #7 的 nullable 布尔字段、#5 更保守的线路等级、#6 显式拒绝参数、#10 默认弃权等兼容性变化。
