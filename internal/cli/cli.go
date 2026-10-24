@@ -52,7 +52,7 @@ func Main(args []string) int {
 		return 0
 	case "latency":
 		if len(rest) == 2 && (rest[1] == "--help" || rest[1] == "-h") {
-			fmt.Fprint(os.Stdout, latencyHelp)
+			fmt.Fprint(os.Stdout, opts.lang.text(latencyHelp))
 			return 0
 		}
 	case "version":
@@ -256,10 +256,7 @@ func dispatch(ctx context.Context, svc *app.Service, cfg *config.Config, g globa
 	}
 }
 
-const latencyHelp = `用法：ipd latency <target> [--svg <local-file>]
-只保存本地自包含 SVG，不上传或开启分享；拒绝覆盖，权限 0600。
-单次 ICMP 探针预算不变；--offline 不请求探针。无有效 RTT 返回 abstain（退出码 10）。
-`
+const latencyHelp = latencyUsageZH
 
 func latencyCmd(ctx context.Context, svc *app.Service, args []string) (app.Report, error) {
 	target, path := "", ""
@@ -269,12 +266,12 @@ func latencyCmd(ctx context.Context, svc *app.Service, args []string) (app.Repor
 		switch {
 		case a == "--svg" || strings.HasPrefix(a, "--svg="):
 			if svgSeen {
-				return app.Report{}, fmt.Errorf("--svg 只能指定一次")
+				return app.Report{}, cliError("--svg 只能指定一次")
 			}
 			svgSeen = true
 			if a == "--svg" {
 				if i+1 >= len(args) {
-					return app.Report{}, fmt.Errorf("--svg 需要本地文件路径")
+					return app.Report{}, cliError("--svg 需要本地文件路径")
 				}
 				i++
 				path = args[i]
@@ -282,19 +279,19 @@ func latencyCmd(ctx context.Context, svc *app.Service, args []string) (app.Repor
 				path = strings.TrimPrefix(a, "--svg=")
 			}
 			if strings.TrimSpace(path) == "" || strings.HasPrefix(path, "--") {
-				return app.Report{}, fmt.Errorf("--svg 需要本地文件路径")
+				return app.Report{}, cliError("--svg 需要本地文件路径")
 			}
 		case strings.HasPrefix(a, "-"):
-			return app.Report{}, fmt.Errorf("未知 latency 参数 %s\n%s", a, latencyHelp)
+			return app.Report{}, cliError("未知 latency 参数 %s\n%s", a, messageText(latencyHelp))
 		default:
 			if target != "" {
-				return app.Report{}, fmt.Errorf("%s", latencyHelp)
+				return app.Report{}, cliError("%s", messageText(latencyHelp))
 			}
 			target = a
 		}
 	}
 	if strings.TrimSpace(target) == "" {
-		return app.Report{}, fmt.Errorf("%s", latencyHelp)
+		return app.Report{}, cliError("%s", messageText(latencyHelp))
 	}
 	// Reserve before measuring: existing paths (including symlinks/directories)
 	// fail atomically, without spending another probe request or truncating data.
@@ -303,14 +300,14 @@ func latencyCmd(ctx context.Context, svc *app.Service, args []string) (app.Repor
 		var err error
 		f, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err != nil {
-			return app.Report{}, fmt.Errorf("保存 SVG: %w", err)
+			return app.Report{}, cliError("保存 SVG: %w", err)
 		}
 		// The pathname can be replaced while Measure runs. Only close our fd:
 		// even checking SameFile before Remove would leave an unlink TOCTOU.
 		// Keeping our own empty/partial export is safer than deleting a new owner.
 		defer f.Close()
 		incomplete := func(err error) (app.Report, error) {
-			return app.Report{}, fmt.Errorf("保存 SVG: %w; empty/partial export may remain (no path cleanup attempted)", err)
+			return app.Report{}, cliError("保存 SVG: %w; empty/partial export may remain (no path cleanup attempted)", err)
 		}
 		rep, err := svc.Latency(ctx, target)
 		if err != nil {
@@ -318,11 +315,11 @@ func latencyCmd(ctx context.Context, svc *app.Service, args []string) (app.Repor
 		}
 		data, ok := rep.Data.(map[string]any)
 		if !ok {
-			return incomplete(fmt.Errorf("latency 响应缺少 SVG"))
+			return incomplete(cliError("latency 响应缺少 SVG"))
 		}
 		svg, ok := data["svg"].(string)
 		if !ok || svg == "" {
-			return incomplete(fmt.Errorf("latency 响应缺少 SVG"))
+			return incomplete(cliError("latency 响应缺少 SVG"))
 		}
 		if _, err := io.WriteString(f, svg); err != nil {
 			return incomplete(err)

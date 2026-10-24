@@ -19,11 +19,10 @@ var englishMessages = map[string]string{
 	"已删除 %s":                    "Deleted %s",
 	"本地报告（未上传）":                 "Local report (not uploaded)",
 	"一站式：%s。AI %s，解锁 %s，DNS %s": "Combined: %s. AI %s, unlocking %s, DNS %s",
-	// PR9 templates are registered without enabling its command or SVG code.
-	latencyUsageZH:         latencyUsageEN,
-	"--svg 只能指定一次":         "--svg may only be specified once",
-	"--svg 需要本地文件路径":       "--svg requires a local file path",
-	"未知 latency 参数 %s\n%s": "Unknown latency argument %s\n%s",
+	latencyUsageZH:              latencyUsageEN,
+	"--svg 只能指定一次":              "--svg may only be specified once",
+	"--svg 需要本地文件路径":            "--svg requires a local file path",
+	"未知 latency 参数 %s\n%s":      "Unknown latency argument %s\n%s",
 	"保存 SVG: %w; empty/partial export may remain (no path cleanup attempted)": "Save SVG: %w; empty/partial export may remain (no path cleanup attempted)",
 	"保存 SVG: %w":                      "Save SVG: %w",
 	"latency 响应缺少 SVG":                "Latency response is missing SVG",
@@ -59,7 +58,7 @@ func (l locale) text(template string) string {
 }
 
 // messageText marks a nested trusted CLI template, never an external value.
-// This lets PR9's usage errors include localized help without translating args.
+// Usage errors can include localized help without translating arguments.
 type messageText string
 
 func (m messageText) String() string { return string(m) }
@@ -110,7 +109,6 @@ func englishSummary(cmd string, args []string, rep app.Report) string {
 		"gfw": "Firewall reachability assessment", "mail": "Mail port reachability assessment",
 		"nodes": "Node assessment", "batch": "Batch IP assessment",
 		"watch": "Watch operation", "report": "Report operation", "label": "Label saved",
-		// PR9 can use the same summary boundary without importing its implementation.
 		"latency": "Latency assessment",
 	}
 	label := labels[cmd]
@@ -223,6 +221,7 @@ const englishHelp = `ipd — address intelligence and network quality for agents
   ipd unlock [services…]   Check service availability
   ipd leak                 DNS leaks (use the browser page for WebRTC)
   ipd route [--return] [--claimed cn2gia] [target]
+  ipd latency <target> [--svg <local-file>]  Local latency card (no overwrite or upload)
   ipd gfw <ip|host>        Firewall blocking versus congestion
   ipd mail <host>          Check mail port reachability
   ipd nodes <clash.yaml>   Batch nodes (subscriptions parsed locally only)
@@ -243,8 +242,7 @@ English summaries are controlled overviews, not translations of source evidence.
 data, sources and external errors remain original; --json includes full evidence.
 `
 
-// These constants only register translations for the separately implemented
-// PR9 command. The base CLI must not advertise a command it does not implement.
+// Share the trusted latency help template with the command to avoid catalog drift.
 const latencyUsageZH = `用法：ipd latency <target> [--svg <local-file>]
 只保存本地自包含 SVG，不上传或开启分享；拒绝覆盖，权限 0600。
 单次 ICMP 探针预算不变；--offline 不请求探针。无有效 RTT 返回 abstain（退出码 10）。

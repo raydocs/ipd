@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -91,6 +92,7 @@ func TestLatencyDispatchSave(t *testing.T) {
 		{name: "partial", samples: []probe.Sample{{Healthy: true, ICMP: "ok", RTTMS: 12}, {Healthy: true, ICMP: "timeout"}}, code: 10},
 		{name: "failed", samples: []probe.Sample{{Healthy: true, ICMP: "timeout"}}, code: 10},
 		{name: "provider_error", err: errors.New("fixture unavailable"), code: 10},
+		{name: "original_sample_error", samples: []probe.Sample{{Healthy: true, ICMP: "failed", Error: "latency 响应缺少 SVG"}}, code: 10},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &latencyCLIProvider{samples: tc.samples, err: tc.err}
@@ -110,6 +112,31 @@ func TestLatencyDispatchSave(t *testing.T) {
 			}
 			if string(b) != rep.Data.(map[string]any)["svg"] {
 				t.Error("saved card differs from report")
+			}
+			for _, sample := range tc.samples {
+				if sample.Error != "" && strings.Contains(string(b), sample.Error) {
+					t.Fatal("raw probe error leaked into SVG")
+				}
+			}
+			// Localization is only a report projection; never mutate probe data,
+			// sources, the saved SVG bytes, machine verdicts or exit codes.
+			original, _ := json.Marshal(rep)
+			var want map[string]any
+			_ = json.Unmarshal(original, &want)
+			for _, lang := range []locale{"zh", "en"} {
+				body, _ := renderLocalized("json", rep, lang, "latency", nil)
+				var got map[string]any
+				if err := json.Unmarshal(body, &got); err != nil {
+					t.Fatal(err)
+				}
+				for key, value := range want {
+					if key != "summary_md" && !reflect.DeepEqual(got[key], value) {
+						t.Fatalf("%s changed %s: %s", lang, key, body)
+					}
+				}
+				if lang == "en" && got["original_summary_md"] != want["summary_md"] {
+					t.Fatal("original summary changed")
+				}
 			}
 			body, _ := render("text", rep)
 			if !strings.HasPrefix(string(body), "VERDICT: "+rep.Verdict) {
@@ -141,6 +168,17 @@ func TestLatencySaveProtectsPaths(t *testing.T) {
 		_, err := latencyCmd(context.Background(), &app.Service{Vantage: p}, []string{"192.0.2.10", "--svg", path})
 		if err == nil {
 			t.Errorf("accepted existing/unwritable path %s", path)
+		} else {
+			var cause *os.PathError
+			if !errors.As(err, &cause) || errors.Unwrap(err) != cause {
+				t.Fatalf("filesystem cause lost: %v", err)
+			}
+			if got := locale("en").error(err); got != "Save SVG: "+cause.Error() {
+				t.Errorf("filesystem error not localized/preserved: %q", got)
+			}
+			if got := locale("zh").error(err); got != "保存 SVG: "+cause.Error() {
+				t.Errorf("default filesystem error changed: %q", got)
+			}
 		}
 		if p.calls != 0 {
 			t.Error("measurement requested despite invalid destination")
