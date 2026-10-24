@@ -2,19 +2,27 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 
 	"ipd/internal/nodes"
 )
 
-// NodeCheck overrides how a local proxy is measured. Tests set this.
-// The default reports the node unreachable rather than launching mihomo.
-var DefaultNodeCheck nodes.Checker = nodesCheckerFunc(func(ctx context.Context, name, socks string) (string, string, string, string, error) {
-	if socks == "" {
-		return "", "", "", "", fmt.Errorf("unreachable")
-	}
-	return "", "", "", "", fmt.Errorf("unreachable")
-})
+// ErrNodeMeasurementUnavailable lets an injected checker report missing probing
+// capability (for example, no per-node endpoint), rather than a dead node.
+var ErrNodeMeasurementUnavailable = errors.New("node measurement unavailable")
+
+// DefaultNodeCheck is an injection point, not an out-of-the-box measurement
+// implementation. A replacement must perform real per-node checks itself: Nodes
+// does not start mihomo and passes an empty SOCKS address to the checker.
+var DefaultNodeCheck nodes.Checker = unavailableNodeChecker{}
+
+type unavailableNodeChecker struct{}
+
+func (unavailableNodeChecker) Check(context.Context, string, string) (string, string, string, string, error) {
+	return "", "", "", "", ErrNodeMeasurementUnavailable
+}
 
 type nodesCheckerFunc func(ctx context.Context, name, socks string) (string, string, string, string, error)
 
@@ -22,29 +30,23 @@ func (f nodesCheckerFunc) Check(ctx context.Context, name, socks string) (string
 	return f(ctx, name, socks)
 }
 
-// NodeRunner is optional. When nil, nodes are parsed and checked without
-// starting mihomo.
+// NodeRunner is retained for source compatibility. Nodes does not wire a runner
+// or create per-node SOCKS endpoints.
 type NodeRunner = nodes.Runner
 
-// NodesFile is set per call via the argument. NodeCheck lives on the service
-// so tests can substitute it.
+// SetNodeChecker injects a checker that owns the actual per-node measurement.
 func (s *Service) SetNodeChecker(c nodes.Checker) { s.nodeChecker = c }
 
-// nodeChecker is stored beside the service fields via this file's method set.
-// The field is declared here as a package-level fallback plus the service field
-// added below through the embedded holder.
-
-// Nodes checks a local subscription. It refuses to run inside the server
-// process for remote URLs unless the caller is the local CLI/MCP path, which
-// is the only caller of this method.
+// Nodes parses a subscription and publishes measurements only when an injected
+// checker completes the batch. The default is parse-only and abstains.
 func (s *Service) Nodes(ctx context.Context, source string, checker nodes.Checker) (Report, error) {
 	text, err := readSource(ctx, source, s.Cfg.Proxy)
 	if err != nil {
-		return Report{}, err
+		return Report{}, errors.New("could not read node subscription")
 	}
 	f, err := nodes.Parse(text)
 	if err != nil {
-		return Report{}, err
+		return Report{}, errors.New("could not parse node subscription")
 	}
 	if checker == nil {
 		checker = s.nodeChecker
@@ -52,9 +54,50 @@ func (s *Service) Nodes(ctx context.Context, source string, checker nodes.Checke
 	if checker == nil {
 		checker = DefaultNodeCheck
 	}
-	outcomes, renamed, err := nodes.Run(ctx, f, checker, nil, nil, 8)
+	count := len(f.Proxies)
+	if err := ctx.Err(); err != nil {
+		return s.nodesUnavailable(count, 0, nodeMeasurementIssue(err, "")), nil
+	}
+	if _, unavailable := checker.(unavailableNodeChecker); checker == nil || unavailable {
+		return s.nodesUnavailable(count, 0, "not_configured"), nil
+	}
+
+	// nodes.Run intentionally collapses checker errors into "unreachable". Keep
+	// the evidence boundary here, before it loses cancellation/capability errors.
+	// If any result is inconclusive, withhold the whole batch's verdicts/export;
+	// this also handles duplicate proxy names without guessing error attribution.
+	var mu sync.Mutex
+	measured := 0
+	issue := ""
+	guarded := nodesCheckerFunc(func(ctx context.Context, name, socks string) (string, string, string, string, error) {
+		var egress, grade, ai, tt string
+		err := ctx.Err()
+		if err == nil {
+			egress, grade, ai, tt, err = checker.Check(ctx, name, socks)
+		}
+		reason := nodeMeasurementIssue(err, egress)
+		mu.Lock()
+		if reason != "" {
+			// Choose a stable reason when concurrent checks fail differently.
+			if issue == "" || reason < issue {
+				issue = reason
+			}
+		} else {
+			measured++
+		}
+		mu.Unlock()
+		return egress, grade, ai, tt, err
+	})
+	outcomes, renamed, err := nodes.Run(ctx, f, guarded, nil, nil, 8)
+	if ctx.Err() != nil {
+		issue = nodeMeasurementIssue(ctx.Err(), "")
+	}
+	if issue != "" {
+		return s.nodesUnavailable(count, measured, issue), nil
+	}
 	if err != nil {
-		return Report{}, err
+		// Parser/renamer errors can contain subscription names or values.
+		return Report{}, errors.New("could not export measured node configuration")
 	}
 	unreachable := 0
 	for _, o := range outcomes {
@@ -72,9 +115,44 @@ func (s *Service) Nodes(ctx context.Context, source string, checker nodes.Checke
 		Verdict: v,
 		Summary: fmt.Sprintf("%d nodes, %d unreachable", len(outcomes), unreachable),
 		Data: map[string]any{
-			"nodes": outcomes, "renamed_yaml": renamed, "count": len(outcomes),
+			"nodes": outcomes, "renamed_yaml": renamed, "count": count,
+			"measurement_status": "completed", "measured_count": measured,
 		},
 		Sources:  []Source{{ID: "local"}},
 		CachedAt: s.now(),
 	}, nil
+}
+
+// An ordinary checker error is a completed negative probe. Missing capability,
+// interruption, and an empty success response are not reachability evidence.
+func nodeMeasurementIssue(err error, egress string) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, ErrNodeMeasurementUnavailable):
+		return "checker_unavailable"
+	}
+	var timeout interface{ Timeout() bool }
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return "timeout"
+	}
+	if err == nil && egress == "" {
+		return "no_observation"
+	}
+	return ""
+}
+
+func (s *Service) nodesUnavailable(count, measured int, reason string) Report {
+	return Report{
+		Verdict: "abstain",
+		Summary: fmt.Sprintf("%d nodes parsed; measurement unavailable (%s); no node verdicts exported", count, reason),
+		Data: map[string]any{
+			"count": count, "measured_count": measured,
+			"measurement_status": "unavailable", "measurement_reason": reason,
+		},
+		Sources:  []Source{{ID: "local"}},
+		CachedAt: s.now(),
+	}
 }
