@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -88,16 +89,23 @@ func (s *Service) coreNodes(ctx context.Context, source string, opts CoreNodeOpt
 	}
 	// SelectBackend validated the exact original bytes (including keys, duplicate
 	// names, depth, count and types). Decode only ordered names/tags from that same
-	// snapshot; never use compatibility Parse/Run or serialize source credentials.
+	// snapshot with the selected native decoder, exactly as the runner does.
+	// YAML quoted-line folding is NOT valid JSON string interpretation. Never
+	// normalize names, use compatibility Parse/Run or serialize credentials.
 	var doc struct {
 		Proxies []struct {
-			Name string `yaml:"name"`
-		} `yaml:"proxies"`
+			Name string `yaml:"name" json:"name"`
+		} `yaml:"proxies" json:"proxies"`
 		Outbounds []struct {
-			Tag string `yaml:"tag"`
-		} `yaml:"outbounds"`
+			Tag string `yaml:"tag" json:"tag"`
+		} `yaml:"outbounds" json:"outbounds"`
 	}
-	if yaml.Unmarshal(data, &doc) != nil {
+	if backend == nodes.BackendSingBox {
+		err = json.Unmarshal(data, &doc)
+	} else {
+		err = yaml.Unmarshal(data, &doc)
+	}
+	if err != nil {
 		return Report{}, ErrCoreNodesInput
 	}
 	var names []string
@@ -357,11 +365,109 @@ func queryCoreEgress(ctx context.Context, endpoint string, target coreProbeTarge
 	if err := gate(); err != nil {
 		return "", err
 	}
-	ip, err := netip.ParseAddr(strings.TrimSpace(string(b)))
-	if err != nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+	ip, ok := publicCoreEgressIP(strings.TrimSpace(string(b)))
+	if !ok {
 		return "", ErrNodeMeasurementUnavailable
 	}
-	return ip.Unmap().String(), nil
+	return ip.String(), nil
+}
+
+// Conservative ordinary-public-address policy, not evidence of live BGP
+// routability. IANA special-purpose IPv4 entries (even special-service anycast),
+// multicast and reserved space are excluded. IPv6 must be in a listed IANA RIR
+// allocation, excluding the special-purpose subranges inside those allocations.
+// Registry snapshot checked 2026-10-24; see docs/CLI_NODE_EGRESS.md for sources.
+// Future allocations fail closed until this local policy is reviewed/updated.
+var coreNonPublicIPv4 = [...]netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.31.196.0/24"),
+	netip.MustParsePrefix("192.52.193.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("192.175.48.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("224.0.0.0/4"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+}
+
+var corePublicIPv6Allocations = [...]netip.Prefix{
+	netip.MustParsePrefix("2001:200::/23"),
+	netip.MustParsePrefix("2001:400::/23"),
+	netip.MustParsePrefix("2001:600::/23"),
+	netip.MustParsePrefix("2001:800::/22"),
+	netip.MustParsePrefix("2001:c00::/23"),
+	netip.MustParsePrefix("2001:e00::/23"),
+	netip.MustParsePrefix("2001:1200::/23"),
+	netip.MustParsePrefix("2001:1400::/22"),
+	netip.MustParsePrefix("2001:1800::/23"),
+	netip.MustParsePrefix("2001:1a00::/23"),
+	netip.MustParsePrefix("2001:1c00::/22"),
+	netip.MustParsePrefix("2001:2000::/19"),
+	netip.MustParsePrefix("2001:4000::/23"),
+	netip.MustParsePrefix("2001:4200::/23"),
+	netip.MustParsePrefix("2001:4400::/23"),
+	netip.MustParsePrefix("2001:4600::/23"),
+	netip.MustParsePrefix("2001:4800::/23"),
+	netip.MustParsePrefix("2001:4a00::/23"),
+	netip.MustParsePrefix("2001:4c00::/23"),
+	netip.MustParsePrefix("2001:5000::/20"),
+	netip.MustParsePrefix("2001:8000::/19"),
+	netip.MustParsePrefix("2001:a000::/20"),
+	netip.MustParsePrefix("2001:b000::/20"),
+	netip.MustParsePrefix("2003::/18"),
+	netip.MustParsePrefix("2400::/12"),
+	netip.MustParsePrefix("2410::/12"),
+	netip.MustParsePrefix("2600::/12"),
+	netip.MustParsePrefix("2610::/23"),
+	netip.MustParsePrefix("2620::/23"),
+	netip.MustParsePrefix("2630::/12"),
+	netip.MustParsePrefix("2800::/12"),
+	netip.MustParsePrefix("2a00::/12"),
+	netip.MustParsePrefix("2a10::/12"),
+	netip.MustParsePrefix("2c00::/12"),
+}
+
+var coreNonPublicIPv6 = [...]netip.Prefix{
+	netip.MustParsePrefix("2001:db8::/32"),     // Documentation inside APNIC allocation.
+	netip.MustParsePrefix("2620:4f:8000::/48"), // Special-purpose AS112 service.
+}
+
+func publicCoreEgressIP(text string) (netip.Addr, bool) {
+	ip, err := netip.ParseAddr(text)
+	// Zones are local scope/opaque text, never egress evidence. Check BEFORE
+	// Unmap, which discards a mapped IPv6 zone along with its IPv6 representation.
+	if err != nil || ip.Zone() != "" {
+		return netip.Addr{}, false
+	}
+	ip = ip.Unmap()
+	if ip.Is4() {
+		for _, prefix := range coreNonPublicIPv4 {
+			if prefix.Contains(ip) {
+				return netip.Addr{}, false
+			}
+		}
+		return ip, true
+	}
+	for _, prefix := range coreNonPublicIPv6 {
+		if prefix.Contains(ip) {
+			return netip.Addr{}, false
+		}
+	}
+	for _, prefix := range corePublicIPv6Allocations {
+		if prefix.Contains(ip) {
+			return ip, true
+		}
+	}
+	return netip.Addr{}, false
 }
 
 func coreNodeReason(err error) string {

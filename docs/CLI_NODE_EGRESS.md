@@ -42,7 +42,8 @@ remote subscription fetch exists on the measurement path. Executables and local
 input are trusted against same-user mutation; this is not an OS sandbox.
 
 The application reuses PR23 `SelectBackend` on the original bounded snapshot;
-a second representation decode reads only sequence-ordered names/tags internally.
+a format-specific metadata decode reads only sequence-ordered names/tags internally
+(`encoding/json` for sing-box JSON, original YAML decoding for mihomo).
 Those names map each original 1-based index to that runner's live authenticated
 endpoint. They never enter the output. No runner API or ownership/lifecycle/
 allowlist code is changed. A 0700 directory/0600 input snapshot is removed after
@@ -57,7 +58,8 @@ fixture root. TLS verification remains on (TLS >=1.2). No environment proxy,
 DIRECT retry, redirect, shared transport or cross-node connection reuse. Each
 client has a 5s request/dial/TLS/header/body deadline, 8KiB response headers and
 256-byte body limit. Four workers and a 45s total budget include startup. Report
-IP parsing does not treat private/loopback responses as exit observations.
+IP parsing uses the conservative ordinary-public policy below, not
+`IsGlobalUnicast` as a substitute for public eligibility.
 
 Before dialing, after connecting/reading and before batch publication, the app
 checks runner Err and live Endpoints. While requests block, a 5ms monitor cancels
@@ -98,10 +100,12 @@ measurements remain unverified/unimplemented. No full-protocol claim. Independen
 security review belongs to the parent before any merge/deploy; author tests are
 not independent review.
 
-### Final executed checks
+### Pre-r1 executed checks (historical)
 
-Code tested at `bdeb5f31c8ac7389659869f93585c980efff930c` (subsequent changes
-are documentation only):
+Before independent r1: code tested at
+`bdeb5f31c8ac7389659869f93585c980efff930c`; the subsequent `e0c7ae2`
+follow-up was documentation only. Those checks did not detect the two P2 findings.
+The r1 correction below adds production changes and new regression evidence:
 
 - `go test ./internal/app ./internal/cli -run 'TestCore' -count=1`: PASS.
 - `go test -race -p 1 ./internal/app ./internal/cli -run 'TestCore' -count=1`:
@@ -122,3 +126,61 @@ history; the replacement branch starts directly at accepted PR23 and contains no
 PR21 roadmap changes. No existing PR/branch was rewritten, no force push was used,
 and PR12 was not touched. Independent review and actual-core/runtime verification
 remain pending with the parent; no merge or deployment was attempted.
+
+
+## Independent r1 BLOCK: two P2 corrections, pending fresh parent r2
+
+R1 rejected `e0c7ae2fb7fc16bdd95dc523a9aba536ba37bc16`; author tests were not
+acceptance. The report and actual helper/HTTPS counterexamples in
+`/tmp/ipd-pr25-review.A5bLaj/` were read without modifying that review tree.
+
+1. **Native string identity:** metadata extraction now uses `encoding/json` for
+   selected sing-box JSON and the original YAML decoder for selected mihomo YAML,
+   on the same runner-validated snapshot. Literal U+0085 is not folded into a
+   different node's tag. Names are not normalized, renamed, guessed or sorted.
+   Real two-origin helper tests cover original index/backend/IP attribution for
+   literal/escaped NEL, U+2028/U+2029, unpaired JSON surrogates, invalid UTF-8 and
+   YAML's intentionally different native quoted-line folding.
+2. **Ordinary public IP eligibility:** reject any nonempty IPv6 `Zone()` before
+   `Unmap()`. Apply the IPv4 special-purpose/reserved/multicast exclusions to both
+   IPv4 and mapped IPv4; native IPv6 must be within a listed IANA RIR allocation
+   and outside its special-purpose subranges. This conservative policy also
+   abstains on special-service anycast/translation/tunnel prefixes rather than
+   treating them as ordinary public exit evidence. It is a numeric eligibility
+   policy, not proof of BGP routability, host assignment or core reachability.
+   Unlisted/future IPv6 allocations fail closed until a reviewed local update.
+
+Registry snapshots checked 2026-10-24:
+[IANA IPv4 special purpose](https://www.iana.org/assignments/iana-ipv4-special-registry/),
+[IANA IPv6 special purpose](https://www.iana.org/assignments/iana-ipv6-special-registry/),
+[IPv6 address space](https://www.iana.org/assignments/ipv6-address-space/), and
+[IPv6 global unicast allocations](https://www.iana.org/assignments/ipv6-unicast-address-assignments/).
+The special registries were last updated 2025-10-09; the IPv6 allocation table
+2025-10-10. No registry download or new endpoint is configured at runtime.
+
+New regressions exercise both backend helper subprocesses and verified loopback
+HTTPS, with a good node plus an invalid-response node. CGNAT, benchmark, reserved,
+documentation and mapped forms, plus scoped credential-bearing values, must make
+**every** row unknown with no IP. Stdout, stderr, standard logger, returned error
+and serialized Report are checked without printing the raw response on failure.
+All new positive response values are synthesized numeric data (including mapped
+IPv4 and ordinary IPv6), never destination addresses/real service credentials;
+all actual sockets are enforced loopback. Policy boundary examples are pure
+function calls, not network probes; no test-only production success exception.
+
+Before production edits, the newly added integration regressions were actually
+run at `e0c7ae2`: `go test -p 1 ./internal/app -run '^TestCoreNodesR1' -count=1`
+**FAILED**. The literal NEL attributed index 1 to the wrong exit, JSON strings
+with surrogate/UTF-8 differences were rejected despite runner validation, and
+non-public/scoped responses completed batches (zone credentials leaked into the
+serialized report). Evidence: `/tmp/ipd-pr25-r1-fix/{baseline.txt,before.log}`.
+The identical tests passed after correction. The reviewer's unchanged production
+counterexamples (`TestReviewJSONTagProductionIdentity` and
+`TestReviewInvalidEgressAccepted`) also passed from a temporary copied overlay,
+which was then removed; its decoder-comparison demonstration is not an app test
+and intentionally still shows that the two libraries have different semantics.
+
+Runner PR23, CLI paths/options, HTTP/MCP/default Nodes, PR22 and parent summary are
+unchanged by this correction. No merge, main push, force, real core/airport,
+secret, public exit-service request or deployment. Fresh independent r2 and
+acceptance remain exclusively with the parent.
