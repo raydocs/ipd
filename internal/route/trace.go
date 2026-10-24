@@ -33,22 +33,25 @@ func Trace(ctx context.Context, target string, maxHops int) ([]Hop, error) {
 		notes = append(notes, platErr.Error())
 	}
 	if realHops(hops) > 0 {
-		return hops, nil
+		return hops, platErr
 	}
 	cmdHops, cmdErr := commandTrace(ctx, ip.String(), maxHops)
 	if cmdErr != nil {
 		notes = append(notes, cmdErr.Error())
 	}
 	if realHops(cmdHops) > realHops(hops) {
-		return cmdHops, nil
+		return cmdHops, cmdErr
 	}
 	if realHops(hops) > 0 {
-		return hops, nil
+		return hops, platErr
 	}
 	if len(notes) == 0 {
 		notes = append(notes, "no hops")
 	}
-	return nil, fmt.Errorf("traceroute unavailable: %s", strings.Join(notes, "; "))
+	if len(cmdHops) > len(hops) {
+		hops = cmdHops
+	}
+	return hops, fmt.Errorf("traceroute unavailable: %s", strings.Join(notes, "; "))
 }
 
 func resolve4(ctx context.Context, target string) (netip.Addr, error) {
@@ -86,6 +89,7 @@ func commandTrace(ctx context.Context, ip string, maxHops int) ([]Hop, error) {
 		{"traceroute", "-n", "-m", strconv.Itoa(maxHops), "-w", "1", "-q", "1", ip},
 	}
 	var last error
+	var best []Hop
 	for _, argv := range candidates {
 		bin, err := exec.LookPath(argv[0])
 		if err != nil {
@@ -95,7 +99,16 @@ func commandTrace(ctx context.Context, ip string, maxHops int) ([]Hop, error) {
 		cmd := exec.CommandContext(ctx, bin, argv[1:]...)
 		out, err := cmd.CombinedOutput()
 		hops := ParseTraceOutput(string(out))
+		if len(hops) > len(best) {
+			best = hops
+		}
 		if realHops(hops) > 0 {
+			if err != nil {
+				return hops, fmt.Errorf("%s: %w", argv[0], err)
+			}
+			if hops[len(hops)-1].IP != ip {
+				return hops, fmt.Errorf("%s did not reach destination", argv[0])
+			}
 			return hops, nil
 		}
 		if err != nil {
@@ -107,7 +120,7 @@ func commandTrace(ctx context.Context, ip string, maxHops int) ([]Hop, error) {
 	if last == nil {
 		last = fmt.Errorf("tracepath and traceroute are not installed")
 	}
-	return nil, last
+	return best, last
 }
 
 var (
@@ -131,10 +144,10 @@ func ParseTraceOutput(s string) []Hop {
 			continue
 		}
 		host := m[2]
-		if host == "[LOCALHOST]" || host == "no" || strings.HasPrefix(host, "[") {
+		if host == "[LOCALHOST]" || strings.HasPrefix(host, "[") {
 			continue
 		}
-		if host == "*" {
+		if host == "*" || (host == "no" && strings.Contains(line, "no reply")) {
 			hops = append(hops, Hop{IP: "*"})
 			continue
 		}
