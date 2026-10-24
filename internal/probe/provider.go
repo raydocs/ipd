@@ -47,6 +47,9 @@ type Sample struct {
 	DNSAddrs []string
 	SNI      string
 	Error    string
+	// DestinationReached is nil when completion is unknown, not an implicit success.
+	DestinationReached *bool
+	TraceDestination   string
 }
 
 // Hop is one traceroute hop before local ASN annotation.

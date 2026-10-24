@@ -667,7 +667,10 @@ func (s *Service) RouteForward(ctx context.Context, target string, carriers []st
 		if pathErr == "" && (!sm.Healthy || (sm.ICMP != "" && sm.ICMP != "ok")) {
 			pathErr = "probe unhealthy or trace incomplete"
 		}
-		paths = append(paths, route.Path{Carrier: sm.Network, Probe: sm.City, Hops: hops, RouteClass: route.Classify(hops), Error: pathErr})
+		if pathErr == "" && (sm.DestinationReached == nil || !*sm.DestinationReached) {
+			pathErr = "destination not reached or completion unknown"
+		}
+		paths = append(paths, route.Path{Carrier: sm.Network, Probe: sm.City, Hops: hops, RouteClass: route.Classify(hops), Error: pathErr, DestinationReached: sm.DestinationReached})
 	}
 	requested := carriers
 	if len(requested) == 0 {

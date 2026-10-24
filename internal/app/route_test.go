@@ -3,6 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,13 +16,19 @@ import (
 )
 
 func TestRouteForwardEvidence(t *testing.T) {
-	known := probe.Sample{Network: "ct", City: "fixture", Healthy: true, ICMP: "ok", Hops: []probe.Hop{{IP: "203.0.113.1", ASN: 4134, RTTMS: 12}}}
+	reached := true
+	known := probe.Sample{DestinationReached: &reached, Network: "ct", City: "fixture", Healthy: true, ICMP: "ok", Hops: []probe.Hop{{IP: "203.0.113.1", ASN: 4134, RTTMS: 12}}}
 	failed := known
 	failed.Error = "probe failed"
 	timeout := known
 	timeout.ICMP = "timeout"
 	unhealthy := known
 	unhealthy.Healthy = false
+	incomplete := known
+	incomplete.DestinationReached = nil
+	stopped := known
+	notReached := false
+	stopped.DestinationReached = &notReached
 	cn2 := known
 	cn2.Hops = []probe.Hop{{IP: "203.0.113.1", ASN: 4809}}
 	unknown := known
@@ -33,6 +42,9 @@ func TestRouteForwardEvidence(t *testing.T) {
 		{"empty", nil, nil, "abstain"},
 		{"control only", []probe.Sample{{Network: "control"}}, nil, "abstain"},
 		{"unknown", []probe.Sample{unknown}, nil, "abstain"},
+		{"unknown completion", []probe.Sample{incomplete}, nil, "abstain"},
+		{"stopped", []probe.Sample{stopped}, nil, "abstain"},
+		{"partial completion", []probe.Sample{known, stopped}, nil, "ok_with_caveats"},
 		{"timeout", []probe.Sample{timeout}, nil, "abstain"},
 		{"unhealthy", []probe.Sample{unhealthy}, nil, "abstain"},
 		{"CN2 not GIA", []probe.Sample{cn2}, nil, "abstain"},
@@ -206,7 +218,8 @@ func TestRouteUnavailableAndCanceled(t *testing.T) {
 		}
 	}
 	s.Vantage = probe.Globalping{Runner: func(context.Context, probe.Query) ([]probe.Sample, error) {
-		return []probe.Sample{{Network: "ct", Healthy: true, Hops: []probe.Hop{{IP: "203.0.113.1", ASN: 4134}}}}, nil
+		reached := true
+		return []probe.Sample{{DestinationReached: &reached, Network: "ct", Healthy: true, Hops: []probe.Hop{{IP: "203.0.113.1", ASN: 4134}}}}, nil
 	}}
 	rep, err = s.RouteForward(ctx, "192.0.2.1", []string{"ct"})
 	if err != nil || rep.Verdict != "ok_with_caveats" || rep.Data.(route.Result).Error != context.Canceled.Error() {
@@ -221,5 +234,44 @@ func TestRouteReturnKnownClaimMatch(t *testing.T) {
 	rep, err := s.RouteReturn(context.Background(), "core", "cu9929")
 	if err != nil || rep.Verdict != "ok" || rep.Data.(route.Result).ClaimMismatch || !strings.Contains(rep.Summary, "matches observed backbones") {
 		t.Fatalf("%+v %v", rep, err)
+	}
+}
+
+func TestRouteForwardGlobalpingCompletion(t *testing.T) {
+	for _, tc := range []struct{ name, result, verdict string }{
+		{"early stop", `{"status":"finished","resolvedAddress":"192.0.2.1","hops":[{"resolvedAddress":"203.0.113.1","asn":4134,"timings":[{"rtt":12}]}]}`, "abstain"},
+		{"reached", `{"status":"finished","resolvedAddress":"192.0.2.1","hops":[{"resolvedAddress":"192.0.2.1","asn":4134,"timings":[{"rtt":12}]}]}`, "ok"},
+		{"unknown destination", `{"status":"finished","hops":[{"resolvedAddress":"203.0.113.1","asn":4134,"timings":[{"rtt":12}]}]}`, "abstain"},
+		{"no destination reply", `{"status":"finished","resolvedAddress":"192.0.2.1","hops":[{"resolvedAddress":"192.0.2.1","asn":4134,"timings":[]}]}`, "abstain"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					fmt.Fprint(w, `{"id":"fixture"}`)
+					return
+				}
+				fmt.Fprintf(w, `{"status":"finished","results":[{"probe":{"asn":4134,"city":"completion-fixture","country":"CN"},"result":%s}]}`, tc.result)
+			}))
+			defer srv.Close()
+			s := &Service{Vantage: probe.Globalping{BaseURL: srv.URL, Client: srv.Client(), MinInterval: -1}}
+			rep, err := s.RouteForward(context.Background(), "target.example.invalid", []string{"ct"})
+			if err != nil || rep.Verdict != tc.verdict {
+				t.Fatalf("%+v err %v", rep, err)
+			}
+			result := rep.Data.(route.Result)
+			if len(result.Paths) != 1 || len(result.Paths[0].Hops) != 1 || (tc.name != "no destination reply" && result.Paths[0].Hops[0].RTTMS != 12) {
+				t.Fatalf("lost evidence %+v", result)
+			}
+			measurement := rep.Sources[0].Raw.([]probe.Sample)[0]
+			if !reflect.DeepEqual(result.Paths[0].DestinationReached, measurement.DestinationReached) {
+				t.Fatal("lost completion evidence")
+			}
+			if tc.verdict == "ok" && (measurement.DestinationReached == nil || !*measurement.DestinationReached) {
+				t.Fatal("missing reached evidence")
+			}
+			if tc.verdict != "ok" && (result.Paths[0].Error == "" || result.ClaimMismatch) {
+				t.Fatalf("missing completion caveat %+v", result)
+			}
+		})
 	}
 }

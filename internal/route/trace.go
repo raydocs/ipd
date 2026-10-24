@@ -144,10 +144,10 @@ func ParseTraceOutput(s string) []Hop {
 			continue
 		}
 		host := m[2]
-		if host == "[LOCALHOST]" || host == "no" || strings.HasPrefix(host, "[") {
+		if host == "[LOCALHOST]" || strings.HasPrefix(host, "[") {
 			continue
 		}
-		if host == "*" {
+		if host == "*" || (host == "no" && strings.Contains(line, "no reply")) {
 			hops = append(hops, Hop{IP: "*"})
 			continue
 		}

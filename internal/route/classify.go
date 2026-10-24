@@ -20,12 +20,13 @@ type Hop struct {
 
 // Path is one carrier's route.
 type Path struct {
-	Carrier    string `json:"carrier"`
-	Province   string `json:"province,omitempty"`
-	Probe      string `json:"probe,omitempty"`
-	Hops       []Hop  `json:"hops"`
-	RouteClass string `json:"route_class"`
-	Error      string `json:"error,omitempty"`
+	Carrier            string `json:"carrier"`
+	Province           string `json:"province,omitempty"`
+	Probe              string `json:"probe,omitempty"`
+	Hops               []Hop  `json:"hops"`
+	RouteClass         string `json:"route_class"`
+	Error              string `json:"error,omitempty"`
+	DestinationReached *bool  `json:"destination_reached,omitempty"`
 }
 
 // Result is the route tool payload.
@@ -217,6 +218,9 @@ func claimCarrier(class string) string {
 }
 
 func reliable(p Path) bool {
+	if p.DestinationReached != nil && !*p.DestinationReached {
+		return false
+	}
 	if p.Error != "" || !comparableClass(p.RouteClass) || len(p.Hops) == 0 || Classify(p.Hops) != p.RouteClass {
 		return false
 	}
