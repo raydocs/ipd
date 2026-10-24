@@ -105,14 +105,11 @@ func New(cfg *config.Config, db *store.Store) *Service {
 	s.Vantage = reg.Active()
 	s.Tracer = func(ctx context.Context, target string) ([]route.Hop, error) {
 		raw, err := route.Trace(ctx, target, 12)
-		if err != nil {
-			return nil, err
-		}
 		ph := make([]probe.Hop, len(raw))
 		for i, h := range raw {
 			ph[i] = probe.Hop{IP: h.IP, RTTMS: h.RTTMS, ASN: h.ASN}
 		}
-		return s.annotate(ph), nil
+		return s.annotate(ph), err
 	}
 	if cfg.EgressIPv4 != "" || cfg.EgressIPv6 != "" {
 		s.Egress = func(ctx context.Context) (string, string) { return cfg.EgressIPv4, cfg.EgressIPv6 }
@@ -647,41 +644,61 @@ func hostOnly(t string) string {
 	return t
 }
 
-// RouteForward asks the China vantage for a path and classifies it.
+// RouteForward measures China vantage -> target, never the reverse direction.
 func (s *Service) RouteForward(ctx context.Context, target string, carriers []string) (Report, error) {
 	if s.Vantage == nil || !s.Vantage.Enabled() {
-		return Report{}, fmt.Errorf("vantage disabled")
+		return s.routeReport(nil, "", "forward", "vantage disabled", []Source{}), nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	samples, err := s.Vantage.Measure(ctx, probe.Query{Kind: probe.KindTrace, Target: target, Carriers: carriers, Limit: 1, MaxHops: 20})
-	if err != nil {
-		return Report{}, err
+	if err == nil {
+		err = ctx.Err()
 	}
-	var paths []route.Path
+	paths := []route.Path{}
+	seen := map[string]bool{}
 	for _, sm := range samples {
 		if sm.Network == "control" {
 			continue
 		}
+		seen[sm.Network] = true
 		hops := s.annotate(sm.Hops)
-		class := route.Classify(hops)
-		paths = append(paths, route.Path{Carrier: sm.Network, Probe: sm.City, Hops: hops, RouteClass: class})
+		pathErr := sm.Error
+		if pathErr == "" && (!sm.Healthy || (sm.ICMP != "" && sm.ICMP != "ok")) {
+			pathErr = "probe unhealthy or trace incomplete"
+		}
+		if pathErr == "" && (sm.DestinationReached == nil || !*sm.DestinationReached) {
+			pathErr = "destination not reached or completion unknown"
+		}
+		paths = append(paths, route.Path{Carrier: sm.Network, Probe: sm.City, Hops: hops, RouteClass: route.Classify(hops), Error: pathErr, DestinationReached: sm.DestinationReached})
 	}
-	if paths == nil {
-		paths = []route.Path{}
+	requested := carriers
+	if len(requested) == 0 {
+		requested = []string{"ct", "cu", "cm"}
 	}
-	sum, _ := route.Summarize(paths, "")
-	return Report{Verdict: "ok", Summary: sum, Data: route.Result{Paths: paths, Summary: sum}, Sources: []Source{{ID: s.Vantage.Name()}}, CachedAt: s.now()}, nil
+	for _, carrier := range requested {
+		if !seen[carrier] {
+			paths = append(paths, route.Path{Carrier: carrier, RouteClass: "unknown", Error: "no measurement for requested carrier"})
+		}
+	}
+	measurementErr := ""
+	if err != nil {
+		measurementErr = err.Error()
+	}
+	return s.routeReport(paths, "", "forward", measurementErr, []Source{{ID: s.Vantage.Name(), Raw: samples}}), nil
 }
 
 func (s *Service) annotate(hops []probe.Hop) []route.Hop {
 	out := make([]route.Hop, 0, len(hops))
 	for _, h := range hops {
 		rh := route.Hop{IP: h.IP, RTTMS: h.RTTMS, ASN: h.ASN}
-		if ip, err := netip.ParseAddr(h.IP); err == nil {
+		if ip, err := netip.ParseAddr(h.IP); err == nil && s.Look != nil {
 			p := s.Look.Lookup(ip)
-			if p.ASN != 0 {
+			if rh.ASN == 0 {
 				rh.ASN = p.ASN
+			} else if p.ASN != 0 && rh.ASN != p.ASN {
+				// Keep the measured ASN and expose disagreement instead of replacing it.
+				rh.LookupASN = p.ASN
 			}
 			rh.GeoCC = p.CC
 			rh.RDNS = p.RDNS
@@ -691,64 +708,55 @@ func (s *Service) annotate(hops []probe.Hop) []route.Hop {
 	return out
 }
 
-// RouteReturn traces from this process toward China targets.
+// RouteReturn traces this process -> China targets; it cannot prove the forward path.
 func (s *Service) RouteReturn(ctx context.Context, scope, claimed string) (Report, error) {
-	targets := route.Targets(scope)
 	if s.Tracer == nil {
-		return Report{
-			Verdict: "abstain",
-			Summary: "traceroute needs CAP_NET_RAW or an injected tracer; classification is ready once hops are supplied",
-			Data:    route.Result{Paths: []route.Path{}, Summary: "no tracer", Claimed: claimed},
-			Sources: []Source{{ID: "local"}}, CachedAt: s.now(),
-		}, nil
+		return s.routeReport(nil, claimed, "return", "no tracer; traceroute needs raw socket permissions or tracepath/traceroute", []Source{{ID: "local"}}), nil
 	}
-	var paths []route.Path
-	fail := 0
-	var firstErr string
-	for _, t := range targets {
-		if ctx.Err() != nil {
-			paths = append(paths, route.Path{Carrier: t.Carrier, Province: t.Province, RouteClass: "unknown", Error: ctx.Err().Error()})
-			fail++
-			continue
-		}
-		hops, err := s.Tracer(ctx, t.IP)
-		if err != nil {
-			if firstErr == "" {
-				firstErr = err.Error()
+	paths := []route.Path{}
+	for _, t := range route.Targets(scope) {
+		var hops []route.Hop
+		err := ctx.Err()
+		if err == nil {
+			hops, err = s.Tracer(ctx, t.IP)
+			if err == nil {
+				err = ctx.Err()
 			}
-			fail++
-			paths = append(paths, route.Path{Carrier: t.Carrier, Province: t.Province, RouteClass: "unknown", Error: err.Error()})
-			continue
 		}
-		class := route.Classify(hops)
-		paths = append(paths, route.Path{Carrier: t.Carrier, Province: t.Province, Hops: hops, RouteClass: class})
+		p := route.Path{Carrier: t.Carrier, Province: t.Province, Hops: hops, RouteClass: route.Classify(hops)}
+		if err != nil {
+			p.Error = err.Error()
+		}
+		paths = append(paths, p)
 	}
-	if fail == len(targets) && firstErr != "" {
-		return Report{
-			Verdict: "abstain",
-			Summary: "回程 traceroute 没有拿到跳数：" + firstErr,
-			Data:    route.Result{Paths: paths, Summary: firstErr, Claimed: claimed},
-			Sources: []Source{{ID: "local"}}, CachedAt: s.now(),
-		}, nil
-	}
-	sum, mismatch := route.Summarize(paths, claimed)
-	v := "ok"
-	if mismatch {
-		v = "risky"
-	}
-	return Report{Verdict: v, Summary: sum, Data: route.Result{Paths: paths, Summary: sum, Claimed: claimed, ClaimMismatch: mismatch}, Sources: []Source{{ID: "local"}}, CachedAt: s.now()}, nil
+	return s.routeReport(paths, claimed, "return", "", []Source{{ID: "local"}}), nil
 }
 
-// ClassifyPath is used by tests and by agents that already have hops.
+// ClassifyPath classifies supplied observations without assuming their direction.
 func (s *Service) ClassifyPath(hops []route.Hop, claimed string) Report {
-	class := route.Classify(hops)
-	p := route.Path{Hops: hops, RouteClass: class}
-	sum, mismatch := route.Summarize([]route.Path{p}, claimed)
-	v := "ok"
-	if mismatch {
-		v = "risky"
+	p := route.Path{Hops: hops, RouteClass: route.Classify(hops)}
+	return s.routeReport([]route.Path{p}, claimed, "unspecified", "", []Source{{ID: "local"}})
+}
+
+func (s *Service) routeReport(paths []route.Path, claimed, direction, measurementErr string, sources []Source) Report {
+	if paths == nil {
+		paths = []route.Path{}
 	}
-	return Report{Verdict: v, Summary: sum, Data: route.Result{Paths: []route.Path{p}, Summary: sum, Claimed: claimed, ClaimMismatch: mismatch}, Sources: []Source{{ID: "local"}}, CachedAt: s.now()}
+	// A top-level measurement error invalidates aggregate claim verification,
+	// without erasing the successful paths or the provider's partial samples.
+	sum, mismatch, verdict := route.Assess(paths, claimed)
+	if measurementErr != "" {
+		if verdict != "abstain" {
+			verdict = "ok_with_caveats"
+		}
+		mismatch = false
+		sum, _, _ = route.Assess(paths, "")
+		sum += "; measurement error: " + measurementErr
+		if route.NormalizeClaim(claimed) != "" {
+			sum += "; claim " + route.NormalizeClaim(claimed) + " unverified"
+		}
+	}
+	return Report{Verdict: verdict, Summary: sum, Data: route.Result{Paths: paths, Direction: direction, Error: measurementErr, Summary: sum, Claimed: claimed, ClaimMismatch: mismatch}, Sources: sources, CachedAt: s.now()}
 }
 
 // Latency asks the vantage for RTTs.
@@ -796,58 +804,59 @@ func (s *Service) Unlock(ctx context.Context, ids []string) Report {
 		return Report{Verdict: "abstain", Summary: "unlock engine missing", Data: map[string]any{"results": []any{}}, Sources: []Source{}}
 	}
 	res := s.Checks.Check(ctx, ids)
-	bad := 0
+	unavailable, unknown, limited := 0, 0, 0
 	for _, r := range res {
-		if r.Status == unlock.No || r.Status == unlock.ErrStatus {
-			bad++
+		switch r.Status {
+		case unlock.Yes:
+		case unlock.No:
+			unavailable++
+		case unlock.Partial, unlock.OriginalsOnly, unlock.AppOnly, unlock.WebOnly, unlock.IDC:
+			limited++
+		default:
+			unknown++
 		}
 	}
 	v := "ok"
-	if bad > 0 && bad < len(res) {
+	switch {
+	case len(res) == 0 || unknown > 0:
+		v = "abstain"
+	case unavailable == len(res):
+		v = "blocked"
+	case unavailable > 0 || limited > 0:
 		v = "ok_with_caveats"
 	}
-	if len(res) > 0 && bad == len(res) {
-		v = "blocked"
-	}
-	return Report{Verdict: v, Summary: fmt.Sprintf("%d services, %d unavailable", len(res), bad), Data: map[string]any{"results": res}, Sources: []Source{{ID: "unlock"}}, CachedAt: s.now()}
+	return Report{Verdict: v, Summary: fmt.Sprintf("%d services, %d unavailable, %d limited, %d unknown", len(res), unavailable, limited, unknown), Data: map[string]any{"results": res}, Sources: []Source{{ID: "unlock"}}, CachedAt: s.now()}
 }
 
 // GoogleRegion is the egress-side 送中 check.
 func (s *Service) GoogleRegion(ctx context.Context) Report {
-	u := s.Checks
-	if u == nil {
-		return Report{Verdict: "abstain", Summary: "no unlock client", Data: map[string]any{"sent_to_china": false}, Sources: []Source{}}
+	data := map[string]any{"sent_to_china": nil, "google_tld": "", "youtube_gl": "", "play_region": ""}
+	report := Report{Verdict: "abstain", Summary: "Google region unknown: insufficient evidence", Data: data, Sources: []Source{}, CachedAt: s.now()}
+	if s.Checks == nil {
+		return report
 	}
-	res := u.Check(ctx, []string{"google_region", "youtube_premium"})
-	sent := false
-	tld, gl, play := "", "", ""
+	res := s.Checks.Check(ctx, []string{"google_region"})
+	data["results"] = res
+	report.Sources = []Source{{ID: "google"}}
 	for _, r := range res {
-		if r.Service == "google_region" && strings.Contains(r.Evidence, "sent_to_china=true") {
-			sent = true
+		if r.Service != "google_region" || (r.Status != unlock.Yes && r.Status != unlock.No) {
+			continue
 		}
-		if strings.Contains(r.Evidence, "google.cn") {
-			tld = "google.cn"
-			sent = true
-		} else if strings.Contains(r.Evidence, "google.com.hk") {
-			tld = "google.com.hk"
-			sent = true
-		} else if tld == "" {
-			tld = "google.com"
+		sent := unlock.SentToChina(r)
+		data["sent_to_china"] = sent
+		data["google_tld"] = r.GoogleTLD
+		data["youtube_gl"] = r.YouTubeGL
+		data["play_region"] = r.PlayRegion
+		report.Verdict = "ok"
+		if sent {
+			report.Verdict = "risky"
 		}
-		if r.Region != "" && gl == "" {
-			gl = r.Region
+		report.Summary = "Google region evidence does not indicate mainland China"
+		if sent {
+			report.Summary = "Google region evidence indicates mainland China (送中)"
 		}
 	}
-	v := "ok"
-	if sent {
-		v = "risky"
-	}
-	return Report{
-		Verdict: v,
-		Summary: gfw.ExplainWallVsSent("ok", sent),
-		Data:    map[string]any{"sent_to_china": sent, "google_tld": tld, "youtube_gl": gl, "play_region": play},
-		Sources: []Source{{ID: "google"}}, CachedAt: s.now(),
-	}
+	return report
 }
 
 // AIEnv is the P1 verdict.
