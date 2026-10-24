@@ -97,3 +97,28 @@ UDP, cross-format conversion, advanced runtime capabilities and all purity/unloc
 measurements remain unverified/unimplemented. No full-protocol claim. Independent
 security review belongs to the parent before any merge/deploy; author tests are
 not independent review.
+
+### Final executed checks
+
+Code tested at `bdeb5f31c8ac7389659869f93585c980efff930c` (subsequent changes
+are documentation only):
+
+- `go test ./internal/app ./internal/cli -run 'TestCore' -count=1`: PASS.
+- `go test -race -p 1 ./internal/app ./internal/cli -run 'TestCore' -count=1`:
+  PASS (`/tmp/ipd-r8-race-final.log`).
+- `go test -p 1 ./... -count=1`: PASS (`/tmp/ipd-r8-full-final.log`).
+- `node --test web/judge.test.mjs`: PASS, 1/1 (`/tmp/ipd-r8-web.log`).
+- An owned detached worktree at the tested code head applied PR22
+  `a25cced46742fc1137212a8e174b7cdb8c6b4b21` with no conflicts;
+  `go test -p 1 ./internal/cli -count=1`: PASS
+  (`/tmp/ipd-r8-compose22.log`). The temporary composition was removed; neither
+  PR22 nor this branch includes the other's implementation.
+- `git diff --quiet 8331260018a4b34cc4874e0ea0ba30271a52a24f HEAD -- internal/nodes`:
+  PASS, runner unchanged. Parent `docs/ROADMAP-STATUS.md` matches `origin/main`.
+
+Active Draft is PR25, base `main`, dependent on PR23. Task-owned PR24 scaffolding
+was closed and superseded because the initial T3 checkout carried PR21's roadmap
+history; the replacement branch starts directly at accepted PR23 and contains no
+PR21 roadmap changes. No existing PR/branch was rewritten, no force push was used,
+and PR12 was not touched. Independent review and actual-core/runtime verification
+remain pending with the parent; no merge or deployment was attempted.
