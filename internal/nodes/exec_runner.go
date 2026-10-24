@@ -69,10 +69,13 @@ type execRun struct {
 	backend   Backend
 	endpoints map[string]Endpoint
 	err       error
+	cause     error
+	invalid   chan struct{}
+	starting  bool
+	startup   context.Context
 }
 type startResult struct {
-	socks map[string]string
-	err   error
+	err error
 }
 type coreProcess struct {
 	cmd  *exec.Cmd
@@ -134,42 +137,26 @@ func (m *ExecRunner) start(ctx context.Context, load func() ([]byte, error)) (ma
 		startup = 10 * time.Second
 	}
 	runCtx, cancel := context.WithTimeout(ctx, budget)
-	r := &execRun{ctx: runCtx, cancel: cancel, done: make(chan struct{}), ready: make(chan startResult, 1)}
+	r := &execRun{ctx: runCtx, cancel: cancel, done: make(chan struct{}), ready: make(chan startResult, 1), invalid: make(chan struct{}), starting: true}
 	m.run = r
 	bin, root, backend, executables := m.Bin, m.TempRoot, m.Backend, maps.Clone(m.Executables)
 	m.mu.Unlock()
+	stopLifetime := context.AfterFunc(runCtx, func() { r.invalidate(runCtx.Err()) })
 	go func() {
-		err := r.execute(bin, root, backend, executables, startup, load)
-		r.cancel()
-		r.mu.Lock()
-		r.err = err
-		r.endpoints = nil
-		r.mu.Unlock()
-		// Buffered: on failure Start waits for all child Wait calls and cleanup.
-		if err != nil {
-			select {
-			case r.ready <- startResult{err: err}:
-			default:
-			}
-		}
-		close(r.done)
+		defer stopLifetime()
+		r.finish(r.execute(bin, root, backend, executables, startup, load))
 	}()
 	result := <-r.ready
 	if result.err != nil {
 		<-r.done
-		return nil, result.err
+		return nil, r.terminalError()
 	}
-	if err := r.ctx.Err(); err != nil {
+	socks, err := r.acceptReady()
+	if err != nil {
 		<-r.done
-		r.mu.RLock()
-		terminal := r.err
-		r.mu.RUnlock()
-		if terminal != nil {
-			return nil, terminal
-		}
-		return nil, err
+		return nil, r.terminalError()
 	}
-	return result.socks, nil
+	return socks, nil
 }
 
 // Stop cancels startup or an active batch, reaps every child, and waits until
@@ -180,7 +167,7 @@ func (m *ExecRunner) Stop() {
 	r := m.run
 	m.mu.Unlock()
 	if r != nil {
-		r.cancel()
+		r.invalidate(context.Canceled)
 		<-r.done
 	}
 }
@@ -194,12 +181,7 @@ func (m *ExecRunner) Endpoints() map[string]Endpoint {
 	if r == nil {
 		return nil
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.ctx.Err() != nil {
-		return nil
-	}
-	return maps.Clone(r.endpoints)
+	return r.liveEndpoints()
 }
 
 // SelectedBackend remains available after teardown, including startup failure.
@@ -215,7 +197,8 @@ func (m *ExecRunner) SelectedBackend() Backend {
 	return r.backend
 }
 
-// Err reports a sanitized terminal error after teardown (nil while active).
+// Err reports logical failure promptly, then any joined teardown errors.
+// It is nil only while the batch remains valid.
 func (m *ExecRunner) Err() error {
 	m.mu.Lock()
 	r := m.run
@@ -223,9 +206,7 @@ func (m *ExecRunner) Err() error {
 	if r == nil {
 		return nil
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.err
+	return r.terminalError()
 }
 
 func (r *execRun) execute(bin, root string, requested Backend, executables map[Backend]string, startup time.Duration, load func() ([]byte, error)) (resultErr error) {
@@ -283,9 +264,11 @@ func (r *execRun) execute(bin, root string, requested Backend, executables map[B
 	}()
 	startupCtx, cancel := context.WithTimeout(r.ctx, startup)
 	defer cancel()
-	exits := make(chan struct{}, len(proxies))
+	stopStartup := r.watchStartup(startupCtx)
+	defer stopStartup()
+	// Invalidate before Kill/Wait/RemoveAll defers, including startup failures.
+	defer func() { r.invalidate(resultErr) }()
 	endpoints := map[string]Endpoint{}
-	socks := map[string]string{}
 	for i, proxy := range proxies {
 		if err := startupCtx.Err(); err != nil {
 			return readinessError(r.ctx)
@@ -327,21 +310,16 @@ func (r *execRun) execute(bin, root string, requested Backend, executables map[B
 		}
 		p := coreProcess{cmd: cmd, done: make(chan struct{})}
 		processes = append(processes, p)
-		go func() { _ = p.cmd.Wait(); close(p.done); exits <- struct{}{} }()
+		go func() { _ = p.cmd.Wait(); r.childExited(p) }()
 		addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-		if err := waitRunnerReady(startupCtx, r.ctx, addr, user, password, p, exits); err != nil {
+		if err := waitRunnerReady(startupCtx, r, addr, user, password, p); err != nil {
 			return err
 		}
 		credentials := url.UserPassword(user, password)
 		endpoints[names[i]] = Endpoint{Backend: driver.ID(), SOCKS: (&url.URL{Scheme: "socks5", Host: addr, User: credentials}).String(), HTTP: (&url.URL{Scheme: "http", Host: addr, User: credentials}).String()}
-		socks[names[i]] = endpoints[names[i]].SOCKS
 	}
-	select {
-	case <-exits:
-		return ErrRunnerExit
-	case <-r.ctx.Done():
-		return r.ctx.Err()
-	default:
+	if err := r.failure(); err != nil {
+		return err
 	}
 	// Recheck every live child's listener immediately before publishing the batch.
 	for i, p := range processes {
@@ -354,16 +332,11 @@ func (r *execRun) execute(bin, root string, requested Backend, executables map[B
 			return err
 		}
 	}
-	r.mu.Lock()
-	r.endpoints = endpoints
-	r.mu.Unlock()
-	r.ready <- startResult{socks: socks}
-	select {
-	case <-r.ctx.Done():
-		return r.ctx.Err()
-	case <-exits:
-		return ErrRunnerExit
+	if err := r.publish(endpoints); err != nil {
+		return err
 	}
+	<-r.invalid
+	return r.failure()
 }
 
 func readinessError(lifetime context.Context) error {
@@ -372,22 +345,28 @@ func readinessError(lifetime context.Context) error {
 	}
 	return ErrRunnerReadiness
 }
-func waitRunnerReady(ctx, lifetime context.Context, addr, user, password string, child coreProcess, exits <-chan struct{}) error {
+func waitRunnerReady(ctx context.Context, r *execRun, addr, user, password string, child coreProcess) error {
 	_, portText, _ := net.SplitHostPort(addr)
 	port, _ := strconv.Atoi(portText)
 	timer := time.NewTicker(20 * time.Millisecond)
 	defer timer.Stop()
 	for {
 		select {
-		case <-exits:
-			return ErrRunnerExit
+		case <-r.invalid:
+			return r.failure()
 		case <-ctx.Done():
-			return readinessError(lifetime)
+			if err := r.failure(); err != nil {
+				return err
+			}
+			return readinessError(r.ctx)
 		default:
 		}
 		owned, err := runnerOwnsListener(ctx, child.cmd.Process.Pid, port)
 		if ctx.Err() != nil {
-			return readinessError(lifetime)
+			if err := r.failure(); err != nil {
+				return err
+			}
+			return readinessError(r.ctx)
 		}
 		select {
 		case <-child.done:
@@ -400,23 +379,26 @@ func waitRunnerReady(ctx, lifetime context.Context, addr, user, password string,
 		if owned {
 			if err := runnerRequireOwner(ctx, child, port); err != nil {
 				if ctx.Err() != nil {
-					return readinessError(lifetime)
+					return readinessError(r.ctx)
 				}
 				return err
 			}
 			if probeRunnerSOCKS(ctx, addr, user, password) == nil && probeRunnerHTTP(ctx, addr) == nil {
 				err := runnerRequireOwner(ctx, child, port)
 				if ctx.Err() != nil {
-					return readinessError(lifetime)
+					return readinessError(r.ctx)
 				}
 				return err
 			}
 		}
 		select {
-		case <-exits:
-			return ErrRunnerExit
+		case <-r.invalid:
+			return r.failure()
 		case <-ctx.Done():
-			return readinessError(lifetime)
+			if err := r.failure(); err != nil {
+				return err
+			}
+			return readinessError(r.ctx)
 		case <-timer.C:
 		}
 	}

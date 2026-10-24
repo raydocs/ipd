@@ -211,6 +211,7 @@ func serve(c net.Conn, user, pass, marker, mode string) {
 	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
 	status, body := 200, marker
 	if req.Header.Get("Proxy-Authorization") != auth {
+		_ = os.WriteFile(filepath.Join(os.Getenv("TMPDIR"), "r2-http-probed"), []byte("ready"), 0600)
 		status, body = 407, ""
 	} else if req.URL.Scheme == "" || req.URL.Host == "" {
 		status, body = 400, ""

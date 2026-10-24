@@ -152,7 +152,17 @@ server or credentials. Errors preserve context cancellation/deadline identity.
 
 Startup has a whole-batch listener deadline (default 10s); `Budget` bounds the
 whole process lifetime including startup (default 3m), and the caller context
-can shorten it. Any child exit revokes the batch and kills/reaps its peers.
+can shorten it. Child exit notification, publication and public observer gates
+share one short state lock. A Wait notification closes that child's done signal
+and invalidates the entire batch in the same transition, before cancellation,
+peer Kill/Wait, kernel queries or storage cleanup can delay logical revocation.
+Context callbacks revoke promptly; publication, Start's acceptance of a queued
+success and Endpoints reads also synchronously check lifetime/startup deadline
+state rather than depending on callback scheduling. No state lock spans lsof,
+Kill, Wait or filesystem operations. Startup expiry applies until Start accepts
+success, not to an already active batch. Err exposes the sanitized initial cause
+immediately and adds cleanup errors after teardown. A queued success is only a
+notification, never an endpoint snapshot that bypasses the validity gate.
 `Stop` is concurrent-safe/idempotent, cancels pending startup and waits for every
 child's `Wait` and the owned-directory cleanup attempt. If removal fails,
 `Err()` joins `ErrRunnerStorage` and `ErrRunnerCleanup` with the original terminal
@@ -226,9 +236,10 @@ mihomo/sing-box configuration acceptance. Neither real core is installed/tested.
 
 Final integrated check results are recorded in the PR. Independent r1 review
 blocked the prior head on listener identity, global-policy semantics and silent
-cleanup failure. This revision addresses those findings with actual before/after
-overlay evidence; it remains Draft and requires the parent's independent r2,
-not author self-acceptance. No merge/deployment is authorized. Subsequent app/checker/JSON document
+cleanup failure. R2 passed those corrections but blocked `937836f` on the batch
+publication race described below. This state-gate correction remains Draft and
+requires the parent's one additional focused independent P1 review, not author
+self-acceptance. No merge/deployment is authorized. Subsequent app/checker/JSON document
 integration, safe conversions, exit-IP/route evidence, purity/scoring and unlock
 measurement remain separate work.
 
@@ -256,3 +267,29 @@ and [proc fd/stat documentation](https://www.kernel.org/doc/Documentation/filesy
 and [lsof machine-output documentation](https://github.com/lsof-org/lsof/blob/master/Lsof.8)
 were checked for the ownership implementation. No core or new system binary was
 installed, and no protocol-only fallback is used when this evidence is unavailable.
+
+### Review r2 publication-race correction (pending focused independent review)
+
+R2 blocked `937836f340a5b585b6c3921042dd502c3f41e8e6`: a previously
+checked child could die during the remainder of the 24-child final owner sweep,
+and successful publication preceded delayed cleanup/revocation. The unchanged
+reviewer's production-fixture overlay was actually reproduced here with race:
+both backends returned success with 24 endpoints 570–579ms after the first child
+had been reaped and its port rebound by an unrelated listener (exit 1).
+
+This correction changes only batch state/exit/deadline/publication synchronization;
+R2's passed ownership/global-policy/cleanup rules remain intact. The same original
+overlay then returned a sanitized ErrRunnerExit and zero endpoints (exit 0).
+Owned evidence: `/tmp/ipd-pr23-r2-fix.wabhyT/`.
+
+The checked-in regression retains 24 nodes, 15s startup and 20s lifetime for both
+backends, the reviewer's ordinary HTTP fixture marker and attack schedule, and
+actual SIGKILL/reaping/foreign port binding. It additionally creates a bounded
+owned filesystem cleanup tree and observes nil Endpoints plus the exit cause
+while teardown is still pending, before Start's eventual error. It does not mock
+ownership or cleanup, add production timing hooks, reduce node counts/budgets,
+or add another final ownership scan. State tests cover concurrent exit/publication,
+queued-success rejection after exit/cancellation/startup expiry, lifetime deadline
+read gates, preserved failure plus cleanup identities, and the distinction between
+startup completion and active lifetime. Author checks are not acceptance; the
+parent owns the one additional focused independent P1 review.
