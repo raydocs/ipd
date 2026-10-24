@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -81,6 +82,97 @@ func TestEnglishCoreRegression(t *testing.T) {
 	}
 	if !strings.Contains(out, "原始") {
 		t.Fatalf("original evidence lost: %s", out)
+	}
+}
+
+func TestLatencyLanguageRegression(t *testing.T) {
+	cliEnv(t)
+	for _, lang := range []string{"zh", "en"} {
+		t.Run(lang, func(t *testing.T) {
+			wantHelp := latencyUsageZH
+			if lang == "en" {
+				wantHelp = latencyUsageEN
+			}
+			for _, args := range [][]string{
+				{"--lang", lang, "latency", "--help"},
+				{"latency", "-h", "--lang=" + lang},
+			} {
+				code, out, errOut := invokeCLI(t, "", args...)
+				if code != 0 || out != wantHelp || errOut != "" {
+					t.Errorf("help %v: code=%d stdout=%q stderr=%q", args, code, out, errOut)
+				}
+			}
+			code, out, errOut := invokeCLI(t, "", "help", "--lang="+lang)
+			if code != 0 || errOut != "" || !strings.Contains(out, "ipd latency <target> [--svg <local-file>]") {
+				t.Errorf("general help: code=%d stdout=%q stderr=%q", code, out, errOut)
+			}
+			for _, tc := range []struct {
+				args   []string
+				zh, en string
+			}{
+				{nil, latencyUsageZH, latencyUsageEN},
+				{[]string{"192.0.2.10", "extra"}, latencyUsageZH, latencyUsageEN},
+				{[]string{"192.0.2.10", "--svg"}, "--svg 需要本地文件路径", "--svg requires a local file path"},
+				{[]string{"192.0.2.10", "--svg="}, "--svg 需要本地文件路径", "--svg requires a local file path"},
+				{[]string{"192.0.2.10", "--svg", "--other"}, "--svg 需要本地文件路径", "--svg requires a local file path"},
+				{[]string{"192.0.2.10", "--svg=x", "--svg=y"}, "--svg 只能指定一次", "--svg may only be specified once"},
+				{[]string{"192.0.2.10", "--原始参数%s"}, "未知 latency 参数 --原始参数%s\n" + latencyUsageZH, "Unknown latency argument --原始参数%s\n" + latencyUsageEN},
+			} {
+				want := tc.zh
+				if lang == "en" {
+					want = tc.en
+				}
+				args := append([]string{"latency", "--lang=" + lang}, tc.args...)
+				code, out, errOut := invokeCLI(t, "", args...)
+				if code != 2 || out != "" || errOut != want+"\n" {
+					t.Errorf("%v: code=%d stdout=%q stderr=%q; want %q", args, code, out, errOut, want+"\n")
+				}
+			}
+		})
+	}
+	// Environment selection and the unchanged default both reach the same help.
+	code, out, errOut := invokeCLI(t, "", "latency", "--help")
+	if code != 0 || out != latencyUsageZH || errOut != "" {
+		t.Fatalf("default help: %d %q %q", code, out, errOut)
+	}
+	t.Setenv("IPD_LANG", "en")
+	code, out, errOut = invokeCLI(t, "", "latency", "--help")
+	if code != 0 || out != latencyUsageEN || errOut != "" {
+		t.Fatalf("environment help: %d %q %q", code, out, errOut)
+	}
+}
+
+func TestLatencyLocalizedOfflineSVG(t *testing.T) {
+	cliEnv(t)
+	t.Setenv("IPD_VANTAGE", "self")
+	for _, lang := range []string{"zh", "en"} {
+		path := filepath.Join(t.TempDir(), "原始-card.svg")
+		code, out, errOut := invokeCLI(t, "", "latency", "192.0.2.10", "--offline", "--svg", path, "--json", "--lang="+lang)
+		var rep struct {
+			app.Report
+			OriginalSummary string `json:"original_summary_md"`
+		}
+		if err := json.Unmarshal([]byte(out), &rep); err != nil {
+			t.Fatalf("%s JSON: %v (%s)", lang, err, out)
+		}
+		if code != 10 || errOut != "" || rep.Verdict != "abstain" {
+			t.Fatalf("%s: %d %q %q", lang, code, out, errOut)
+		}
+		data := rep.Data.(map[string]any)
+		card, err := os.ReadFile(path)
+		if err != nil || string(card) != data["svg"] || !strings.Contains(string(card), "Offline: no measurement requested.") || data["sample_count"] != float64(0) {
+			t.Fatalf("saved SVG/evidence changed: %v %s", err, out)
+		}
+		if lang == "en" && (!strings.HasPrefix(rep.Summary, "Latency assessment") || hasHan(rep.Summary) || rep.OriginalSummary == "") {
+			t.Fatalf("English overview: %s", out)
+		}
+		if lang == "zh" && strings.Contains(out, "original_summary_md") {
+			t.Fatal("default JSON envelope changed")
+		}
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("export permissions: %v %v", info, err)
+		}
 	}
 }
 

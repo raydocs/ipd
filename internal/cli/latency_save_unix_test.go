@@ -25,18 +25,26 @@ func TestLatencySaveWriteFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"replacement_file", "replacement_directory", "replacement_symlink", "own_partial", "own_empty", "main_empty"} {
-		t.Run(mode, func(t *testing.T) {
-			cmd := exec.Command(binary, "-test.run=^TestLatencySaveWriteFailureProcess$", "-test.v")
-			cmd.Env = append(os.Environ(), "IPD_LATENCY_WRITE_FAILURE_FIXTURE="+mode, "IPD_LATENCY_WRITE_FAILURE_DIR="+t.TempDir())
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("isolated write-failure regression: %v\n%s", err, output)
-			}
-			if mode == "main_empty" && !strings.Contains(string(output), "empty/partial export may remain") {
-				t.Fatalf("CLI did not warn about the failed artifact:\n%s", output)
-			}
-		})
+	for _, lang := range []string{"zh", "en"} {
+		for _, mode := range []string{"replacement_file", "replacement_directory", "replacement_symlink", "own_partial", "own_empty", "main_empty"} {
+			t.Run(lang+"/"+mode, func(t *testing.T) {
+				cmd := exec.Command(binary, "-test.run=^TestLatencySaveWriteFailureProcess$", "-test.v")
+				cmd.Env = append(os.Environ(), "IPD_LANG="+lang, "IPD_LATENCY_WRITE_FAILURE_FIXTURE="+mode, "IPD_LATENCY_WRITE_FAILURE_DIR="+t.TempDir())
+				output, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("isolated write-failure regression: %v\n%s", err, output)
+				}
+				if mode == "main_empty" {
+					prefix := "保存 SVG: "
+					if lang == "en" {
+						prefix = "Save SVG: "
+					}
+					if !strings.Contains(string(output), prefix) || !strings.Contains(string(output), "empty/partial export may remain") {
+						t.Fatalf("CLI did not localize/warn about the failed artifact:\n%s", output)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -120,6 +128,17 @@ func TestLatencySaveWriteFailureProcess(t *testing.T) {
 		_, err := latencyCmd(context.Background(), svc, []string{"192.0.2.10", "--svg", path})
 		if err == nil || !(errors.Is(err, syscall.EFBIG) || errors.Is(err, io.ErrShortWrite)) {
 			t.Fatalf("expected size-limited SVG write failure, got %v", err)
+		}
+		cause := errors.Unwrap(err)
+		if cause == nil {
+			t.Fatal("save wrapper lost its original cause")
+		}
+		prefix := "保存 SVG: "
+		if os.Getenv("IPD_LANG") == "en" {
+			prefix = "Save SVG: "
+		}
+		if got := locale(os.Getenv("IPD_LANG")).error(err); got != prefix+cause.Error()+"; empty/partial export may remain (no path cleanup attempted)" {
+			t.Fatalf("localized write error changed cause/warning: %q", got)
 		}
 		info, statErr := os.Lstat(path)
 		if statErr != nil {
