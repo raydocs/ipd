@@ -92,3 +92,27 @@ offline/default and cancel/deadline/core-exit cases passed in narrow execution.
 The strengthened live-owner-loss regression actually fails for both backends,
 returning completed positives after the listener-revoked marker. It is intentionally
 retained as a blocker, not special-cased away. Helper binaries are not real cores.
+
+Final checks on code head `c00b1bae0ef85ede306a1dc03ccb137b359da33a`
+(the following final evidence-only commit does not change code):
+
+- `go test -race -p 1 ./internal/app ./internal/cli -run '^TestCoreNode' -count=1`:
+  **FAIL**, only `RevokesWholeBatch/{mihomo,sing-box}/lose-owner`; app 29.617s,
+  CLI PASS 2.135s; no race-detector diagnostic. This is not a passing race run.
+- `go test -p 1 ./... -count=1`: **FAIL**, same two live-owner-loss subtests;
+  app 28.651s; every other tested package passed, including runner and shared
+  unlock tests. This is not a green full suite.
+- `node --test web/judge.test.mjs`: **PASS**, 1 test.
+- Separate owned detached checkout at the same code head applied PR22 `a25cced`
+  with `git apply --3way --index` cleanly. Its `go test -p 1 ./internal/cli -count=1`
+  **PASS** (4.639s). A direct non-three-way patch first failed on adjacent help
+  context; no PR22 code was merged into this branch. The owned detached checkout
+  was restored and removed after the check.
+- `git diff --check`: PASS. No diff from `676aabf` in `internal/nodes`,
+  `internal/unlock`, `internal/api` or `internal/mcp`.
+- Latest fetched/synchronized `origin/main` at check time:
+  `3a0832284585118d473a7fd08fb4c924831f760b`; future integration must re-fetch.
+
+Raw local logs: `/tmp/ipd-unlock-old25-regression.log`,
+`/tmp/ipd-unlock-final-race.log`, `/tmp/ipd-unlock-final-full.log`,
+`/tmp/ipd-unlock-final-web.log`, `/tmp/ipd-unlock-pr22.log`.
