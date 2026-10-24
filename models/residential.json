@@ -1,0 +1,43 @@
+{
+  "version": "residential-2026.11.0",
+  "classes": ["residential_fixed", "residential_mobile", "isp_static", "business", "hosting", "cdn_anycast"],
+  "learning_rate": 1.0,
+  "trees": [
+    {
+      "feature": "as_business",
+      "threshold": 0.5,
+      "left": {"leaf": [0, 0, 0, 0, 0, 0]},
+      "right": {"leaf": [0, 0, 0, 4, 0, 0]}
+    },
+    {
+      "feature": "as_hosting",
+      "threshold": 0.5,
+      "left": {"leaf": [0, 0, 0, 0, 0, 0]},
+      "right": {"leaf": [0, 0, 0, 0, 4, 0]}
+    },
+    {
+      "feature": "keyword_idc",
+      "threshold": 0.5,
+      "left": {"leaf": [0, 0, 0, 0, 0, 0]},
+      "right": {"leaf": [0, 0, 0, 0, 3, 0]}
+    },
+    {
+      "feature": "as_cdn",
+      "threshold": 0.5,
+      "left": {"leaf": [0, 0, 0, 0, 0, 0]},
+      "right": {"leaf": [0, 0, 0, 0, 0, 4]}
+    },
+    {
+      "feature": "as_mobile",
+      "threshold": 0.5,
+      "left": {"leaf": [0, 0, 0, 0, 0, 0]},
+      "right": {"leaf": [0, 0, 3, 0, 0, 0]}
+    },
+    {
+      "feature": "eyeball",
+      "threshold": 0.5,
+      "left": {"leaf": [0, 0, 0, 0, 0, 0]},
+      "right": {"leaf": [2, 0, 0, 0, 0, 0]}
+    }
+  ]
+}

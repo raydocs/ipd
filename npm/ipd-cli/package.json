@@ -1,0 +1,10 @@
+{
+  "name": "ipd-cli",
+  "version": "0.9.0",
+  "description": "Run the local ipd binary. Egress checks stay on this machine.",
+  "bin": {
+    "ipd-cli": "./bin.js"
+  },
+  "files": ["bin.js"],
+  "license": "MIT"
+}

@@ -1,0 +1,17 @@
+zones:
+  - {zone: zen.spamhaus.org, name: Spamhaus ZEN, license: "Spamhaus terms; commercial use needs a separate review"}
+  - {zone: bl.spamcop.net, name: SpamCop, license: public DNSBL}
+  - {zone: b.barracudacentral.org, name: Barracuda, license: Barracuda terms}
+  - {zone: dnsbl.sorbs.net, name: SORBS, license: SORBS terms}
+  - {zone: cbl.abuseat.org, name: CBL, license: public}
+  - {zone: psbl.surriel.com, name: PSBL, license: public}
+  - {zone: dnsbl-1.uceprotect.net, name: UCEPROTECT L1, license: UCEPROTECT terms}
+  - {zone: bl.mailspike.net, name: Mailspike, license: public}
+  - {zone: all.s5h.net, name: S5H, license: public}
+  - {zone: dnsbl.dronebl.org, name: DroneBL, license: DroneBL terms}
+  - {zone: bl.0spam.org, name: 0spam, license: public}
+  - {zone: spam.dnsbl.anonmails.de, name: anonmails, license: public}
+  - {zone: ix.dnsbl.manitu.net, name: NiX Spam, license: public}
+  - {zone: truncate.gbudb.net, name: GBUdb, license: public}
+  - {zone: db.wpbl.info, name: WPBL, license: public}
+  - {zone: bl.blocklist.de, name: blocklist.de, license: public}

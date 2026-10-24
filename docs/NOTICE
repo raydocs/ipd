@@ -1,0 +1,12 @@
+ipd
+
+Copyright holders of the datasets listed in docs/ATTRIBUTION.md retain their
+own licenses. Those terms are not changed by this file.
+
+The scoring weights in models/ are published so a score can be reproduced.
+There is no paid adjustment.
+
+Region Restriction Check (MIT) informed which HTTP signals are public.
+This repository reimplements that behavior and does not copy that program.
+
+IPQuality, 融合怪, and NextTrace are not included. mihomo is never linked.

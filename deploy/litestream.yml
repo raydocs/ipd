@@ -1,0 +1,7 @@
+# Example only. Point the replica at storage the operator already runs.
+# This file is not applied anywhere by the build.
+dbs:
+  - path: /var/lib/ipd/ipd.db
+    replicas:
+      - type: file
+        path: /var/lib/ipd/replica

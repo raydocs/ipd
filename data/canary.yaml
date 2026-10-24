@@ -1,0 +1,14 @@
+# Daily expectations for probe self-checks. A mismatch means a detector
+# probably broke, not that the probe changed. Alert within 24h.
+probes:
+  - id: la-direct
+    region: US
+    services:
+      claude: "yes"
+      chatgpt: "yes"
+      netflix: "yes"
+      google_region: "yes"
+  - id: unsupported-region
+    region: HK
+    services:
+      claude: "no"

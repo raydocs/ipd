@@ -1,0 +1,23 @@
+[Unit]
+Description=ipd probe agent
+After=network-online.target
+
+[Service]
+Type=simple
+User=ipd-agent
+Group=ipd-agent
+ExecStart=/usr/local/bin/ipd agent
+Restart=on-failure
+RestartSec=5
+MemoryMax=64M
+CPUQuota=50%
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# The hub URL and enroll token are supplied by the installer, not baked in.
+Environment=IPD_SERVER=http://127.0.0.1:8787
+Environment=IPD_ENROLL_TOKEN=
+
+[Install]
+WantedBy=multi-user.target

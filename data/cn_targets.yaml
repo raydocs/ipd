@@ -1,0 +1,36 @@
+# Public ISP resolver addresses used as traceroute targets.
+# These are operator DNS / backbone addresses, reviewed 2026-10-23.
+# Re-verify quarterly. `core` is Beijing, Shanghai, and Guangzhou.
+targets:
+  - {province: 北京, carrier: ct, ip: 219.141.136.10, name: 北京电信 DNS, core: true}
+  - {province: 上海, carrier: ct, ip: 202.96.209.133, name: 上海电信 DNS, core: true}
+  - {province: 广东, carrier: ct, ip: 202.96.128.86, name: 广东电信 DNS, core: true}
+  - {province: 北京, carrier: cu, ip: 202.106.0.20, name: 北京联通 DNS, core: true}
+  - {province: 上海, carrier: cu, ip: 210.22.70.3, name: 上海联通 DNS, core: true}
+  - {province: 广东, carrier: cu, ip: 210.21.196.6, name: 广东联通 DNS, core: true}
+  - {province: 北京, carrier: cm, ip: 221.130.33.60, name: 北京移动 DNS, core: true}
+  - {province: 上海, carrier: cm, ip: 211.136.17.107, name: 上海移动 DNS, core: true}
+  - {province: 广东, carrier: cm, ip: 120.196.165.24, name: 广东移动 DNS, core: true}
+  - {province: 江苏, carrier: ct, ip: 218.2.135.1, name: 江苏电信 DNS, core: false}
+  - {province: 浙江, carrier: ct, ip: 202.101.172.35, name: 浙江电信 DNS, core: false}
+  - {province: 四川, carrier: ct, ip: 61.139.2.69, name: 四川电信 DNS, core: false}
+  - {province: 湖北, carrier: ct, ip: 202.103.24.68, name: 湖北电信 DNS, core: false}
+  - {province: 陕西, carrier: ct, ip: 202.100.4.15, name: 陕西电信 DNS, core: false}
+  - {province: 辽宁, carrier: cu, ip: 202.96.64.68, name: 辽宁联通 DNS, core: false}
+  - {province: 山东, carrier: cu, ip: 202.102.128.68, name: 山东联通 DNS, core: false}
+  - {province: 河南, carrier: cm, ip: 211.138.180.2, name: 河南移动 DNS, core: false}
+  - {province: 福建, carrier: ct, ip: 202.101.98.55, name: 福建电信 DNS, core: false}
+  - {province: 湖南, carrier: ct, ip: 202.103.96.112, name: 湖南电信 DNS, core: false}
+  - {province: 重庆, carrier: ct, ip: 61.128.128.68, name: 重庆电信 DNS, core: false}
+  - {province: 天津, carrier: cu, ip: 202.99.96.68, name: 天津联通 DNS, core: false}
+  - {province: 河北, carrier: ct, ip: 202.99.160.68, name: 河北电信 DNS, core: false}
+  - {province: 安徽, carrier: ct, ip: 202.102.192.68, name: 安徽电信 DNS, core: false}
+  - {province: 江西, carrier: ct, ip: 202.101.224.69, name: 江西电信 DNS, core: false}
+  - {province: 广西, carrier: ct, ip: 202.103.224.68, name: 广西电信 DNS, core: false}
+  - {province: 云南, carrier: ct, ip: 222.172.200.68, name: 云南电信 DNS, core: false}
+  - {province: 贵州, carrier: ct, ip: 202.98.192.68, name: 贵州电信 DNS, core: false}
+  - {province: 黑龙江, carrier: cu, ip: 202.97.224.69, name: 黑龙江联通 DNS, core: false}
+  - {province: 吉林, carrier: ct, ip: 202.98.0.68, name: 吉林电信 DNS, core: false}
+  - {province: 山西, carrier: ct, ip: 202.99.192.68, name: 山西电信 DNS, core: false}
+  - {province: 甘肃, carrier: ct, ip: 202.100.64.68, name: 甘肃电信 DNS, core: false}
+  - {province: 新疆, carrier: ct, ip: 61.128.99.133, name: 新疆电信 DNS, core: false}

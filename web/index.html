@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ipd · 出口与地址质量</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<main>
+  <h1>ipd</h1>
+  <p class="lede">先看结论：这个地址像不像真住宅、是不是广播、能不能给 Claude 和 ChatGPT 用、从中国看是被墙还是送中。证据跟在后面。低置信度会写「无法判定」。</p>
+  <form id="q">
+    <input id="ip" name="ip" placeholder="留空则看本机出口，或填一个公网 IP" autocomplete="off">
+    <button type="submit">查询</button>
+  </form>
+  <section class="card" id="out" hidden>
+    <p class="verdict" id="verdict"></p>
+    <p id="summary"></p>
+    <pre id="detail"></pre>
+  </section>
+  <div class="row">
+    <button type="button" class="secondary" id="webrtc">在本机判断 WebRTC</button>
+    <button type="button" class="secondary" id="tz">核对时区</button>
+  </div>
+  <section class="card" id="local" hidden>
+    <p id="localtext"></p>
+  </section>
+  <footer>
+    <p>方法公开在 <a href="/v1/methodology">/v1/methodology</a>，数据源在 <a href="/v1/sources">/v1/sources</a>。WebRTC 候选地址只在这台浏览器里比较，上传的只有「是否泄露」和候选条数。</p>
+    <p>给 agent：<code>curl</code> 本站第一行就是结论；MCP 在 <code>/mcp</code>。</p>
+  </footer>
+</main>
+<script src="/static/judge.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

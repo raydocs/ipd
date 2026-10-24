@@ -1,0 +1,32 @@
+---
+# Run this yourself. The build does not execute it and does not contact any host.
+- name: Install ipd probe agent
+  hosts: probes
+  become: true
+  vars:
+    ipd_hub: "http://127.0.0.1:8787"
+    ipd_enroll_token: "{{ vault_ipd_enroll_token }}"
+    ipd_bin: /usr/local/bin/ipd
+  tasks:
+    - name: Install binary
+      copy:
+        src: "{{ playbook_dir }}/../../bin/ipd"
+        dest: "{{ ipd_bin }}"
+        mode: "0755"
+    - name: Agent environment
+      copy:
+        dest: /etc/ipd/agent.env
+        mode: "0600"
+        content: |
+          IPD_SERVER={{ ipd_hub }}
+          IPD_ENROLL_TOKEN={{ ipd_enroll_token }}
+    - name: systemd unit
+      copy:
+        src: "{{ playbook_dir }}/../systemd/ipd-agent.service"
+        dest: /etc/systemd/system/ipd-agent.service
+    - name: Enable agent
+      systemd:
+        name: ipd-agent
+        enabled: true
+        state: started
+        daemon_reload: true

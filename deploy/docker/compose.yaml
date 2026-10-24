@@ -1,0 +1,20 @@
+# Local or staging only. Published ports stay on loopback.
+services:
+  ipd:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    environment:
+      IPD_DOMAIN: localhost
+      IPD_HTTP_ADDR: 0.0.0.0:8787
+      IPD_SHARE_ENABLED: "false"
+      IPD_LABELS_ENABLED: "false"
+      IPD_OFFLINE: "true"
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ipd-data:/var/lib/ipd
+    mem_limit: 4g
+    cpus: 4.0
+volumes:
+  ipd-data:

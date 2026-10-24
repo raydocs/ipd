@@ -1,0 +1,9 @@
+/bin/
+/dist/
+/var/
+/uploads/
+*.db
+*.db-wal
+*.db-shm
+/coverage.out
+.ipd/

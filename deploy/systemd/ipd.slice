@@ -1,0 +1,10 @@
+# Isolate ipd to four CPUs on a shared CI host.
+# This unit does not retune GitHub Actions runners. Pinning runners to CPUs 0-7
+# needs a separate approval (plan item D3).
+[Slice]
+AllowedCPUs=8-11
+CPUQuota=400%
+MemoryMax=4G
+MemoryHigh=3.5G
+IOWeight=50
+TasksMax=512

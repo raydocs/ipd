@@ -1,0 +1,7 @@
+# Standby only. The existing Caddy on the standby host already owns :80 and :443.
+# This block reverse-proxies a new site to ipd on loopback :8443.
+# Do not install it until the operator approves the Caddy edit (plan item D4).
+#
+# standby.example.test {
+# 	reverse_proxy 127.0.0.1:8443
+# }

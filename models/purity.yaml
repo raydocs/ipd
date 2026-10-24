@@ -1,0 +1,37 @@
+# Open weights for the purity score. No paid override exists.
+model_version: purity-2026.11.0
+start: 100
+grades:
+  A+: 97
+  A: 93
+  A-: 85
+  B+: 78
+  B: 70
+  C: 60
+  D: 50
+  F: 0
+verdicts:
+  ok: 85
+  ok_with_caveats: 70
+  risky: 50
+factors:
+  hosting: -15
+  cdn: -10
+  business: -5
+  vpn: -20
+  tor: -40
+  proxy_list_per_source: -5
+  proxy_list_cap: -20
+  scamalytics_cap: -25
+  ipqs_cap: -20
+  abuseipdb_cap: -20
+  dnsbl_each: -3
+  dnsbl_cap: -15
+  neighbor_cap: -10
+  malicious_list: -10
+  google_captcha: -10
+  cloudflare_challenge: -5
+  akamai: -5
+  ai_unavailable: -10
+  geo_disagreement: -5
+  location_inconsistent: -5
