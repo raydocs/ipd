@@ -189,10 +189,11 @@ func (e *Engine) load(s snapshot) int {
 	return n
 }
 
-// SnapshotAge reports the oldest loaded DB-IP / BGP source time, or the
-// oldest loaded prefix source if neither is present. A missing timestamp in
-// that clock set returns (zero time, 0): unknown, not fresh. Future ages clamp
-// to zero. Each call observes one atomic engine state, not a multi-call read.
+// SnapshotAge reports the oldest loaded, enabled DB-IP / BGP source time, or
+// the oldest loaded, enabled prefix source if neither primary is eligible.
+// A missing timestamp in that clock set returns (zero time, 0): unknown, not
+// fresh. Future ages clamp to zero. Each call observes one atomic engine state,
+// not a multi-call read.
 func (e *Engine) SnapshotAge(now time.Time) (time.Time, int64) {
 	if e == nil {
 		return time.Time{}, 0
@@ -221,10 +222,15 @@ func (e *Engine) notePrefixLocked(id string, at time.Time) {
 }
 
 func (e *Engine) prefixAtLocked() time.Time {
+	// Enabled is clock eligibility, not a filter on queryable prefix data.
+	enabled := func(id string) bool {
+		i, ok := e.byID[id]
+		return ok && e.meta[i].Enabled
+	}
 	var oldest time.Time
 	for _, id := range []string{"bgp", "dbip_lite"} {
 		t, ok := e.prefixTimes[id]
-		if !ok {
+		if !ok || !enabled(id) {
 			continue
 		}
 		if t.IsZero() {
@@ -237,14 +243,16 @@ func (e *Engine) prefixAtLocked() time.Time {
 	if !oldest.IsZero() {
 		return oldest
 	}
-	// Only queryable prefix data participates in the fallback clock, not
-	// metadata-only placeholders or an attached MMDB's local open time.
+	// Only loaded, enabled prefix data participates in the fallback clock,
+	// not metadata-only placeholders or an attached MMDB's local open time.
 	consider := func(id string) bool {
-		i, ok := e.byID[id]
-		if !ok || e.meta[i].UpdatedAt.IsZero() {
+		if !enabled(id) {
+			return true
+		}
+		at := e.meta[e.byID[id]].UpdatedAt
+		if at.IsZero() {
 			return false
 		}
-		at := e.meta[i].UpdatedAt
 		if oldest.IsZero() || at.Before(oldest) {
 			oldest = at
 		}

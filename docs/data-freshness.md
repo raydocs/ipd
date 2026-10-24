@@ -24,16 +24,27 @@ reads before calling `Close`; it is not an independently synchronized handle.
 
 `SnapshotAge(now)` uses source-supplied `UpdatedAt`, not local install/reload time:
 
-1. Among **loaded, nonempty** `bgp` and `dbip_lite` sources, the oldest source time
-   wins. A source's timestamp is replaced, not monotonically maximized: installing
-   older authoritative data must make the clock older too.
-2. If neither primary source is loaded, use the oldest time among all queryable
-   prefix sources. Metadata-only placeholders and MMDB open time do not count.
-3. If any source in the selected clock set lacks a timestamp (including missing
-   metadata), return zero `time.Time` and age `0`. This means **unknown**, not
-   newly built or fresh. A known timestamp on another source must not hide it.
-4. Otherwise age is nonnegative whole seconds since that timestamp; future source
+1. Among **loaded, nonempty, enabled** `bgp` and `dbip_lite` sources, the
+   oldest source time wins. A source's timestamp is replaced, not monotonically
+   maximized: installing older authoritative data must make the clock older too.
+2. If neither primary source is eligible, use the oldest time among all loaded,
+   nonempty, enabled prefix sources. Metadata-only placeholders and MMDB open
+   time do not count.
+3. A source without metadata is not known enabled and is excluded, as are
+   explicitly disabled sources. Their old or unknown timestamps cannot affect
+   the selected clock. With no eligible sources, return zero `time.Time` and
+   age `0` (**unknown**).
+4. If any eligible source in the selected clock set lacks a timestamp, also
+   return zero `time.Time` and age `0`: unknown, not newly built or fresh. A known
+   timestamp on another source must not hide it.
+5. Otherwise age is nonnegative whole seconds since that timestamp; future source
    times produce age `0` without changing the source timestamp.
+
+`SourceMeta.Enabled` gates **clock selection**, not query participation. `Reload`
+retains the supplied enabled flags and prefix data, including disabled sources'
+rows. This clock policy does not remove rows or change lookup/classification
+semantics. As before, a successful `MergeSource` or `InstallSnapshot` marks its
+source enabled; this correction does not alter that publication behavior.
 
 Unknown `UpdatedAt` stays zero in memory and snapshot metadata. Neither merge nor
 snapshot building invents a timestamp with the current time. `Sources(now)` marks
@@ -64,5 +75,6 @@ node --test web/judge.test.mjs
 Replacement tests cover memory → mapped → memory, mapped → reload, removal of
 mapped sources, failure retention, reader-pinned retirement, and simultaneous
 lookup plus all three same-source writers. Freshness tests cover clock advancement,
-oldest-source selection, staleness boundaries, future times, missing timestamps,
-and restoration of a known clock. Tests do not download feeds.
+oldest-source selection, enabled/disabled primary and fallback eligibility,
+no-enabled-source unknown clocks, staleness boundaries, future times, missing
+timestamps, and restoration of a known clock. Tests do not download feeds.
