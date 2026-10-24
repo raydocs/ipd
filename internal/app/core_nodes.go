@@ -2,13 +2,11 @@ package app
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -156,20 +154,27 @@ func (s *Service) coreNodes(ctx context.Context, source string, opts CoreNodeOpt
 	if os.WriteFile(path, data, 0600) != nil {
 		return s.coreNodeReport(rows, "unavailable", "storage_unavailable"), nil
 	}
+	var handle *nodes.RunHandle
 	runner := &nodes.ExecRunner{Backend: backend, Executables: bins, Budget: coreBatchBudget, StartupTimeout: 10 * time.Second}
 	// Defer before Start, including partial startup failures. Stop waits for all
 	// children and cleanup. A cleanup failure must never publish observations.
 	defer func() {
 		prior, interrupted := runner.Err(), ctx.Err()
+		if handle != nil {
+			prior = handle.Err()
+		}
 		runner.Stop()
 		terminal := runner.Err()
+		if handle != nil {
+			terminal = handle.Err()
+		}
 		switch {
-		case errors.Is(terminal, nodes.ErrRunnerCleanup):
+		case errors.Is(terminal, nodes.ErrRunnerCleanup), errors.Is(terminal, nodes.ErrRunnerStorage):
 			report = s.coreNodeReport(rows, "unavailable", "cleanup_incomplete")
-		case prior != nil || errors.Is(terminal, nodes.ErrRunnerExit):
-			report = s.coreNodeReport(rows, "unavailable", "core_unavailable")
-		case errors.Is(terminal, context.DeadlineExceeded):
-			report = s.coreNodeReport(rows, "unavailable", "timeout")
+		case prior != nil:
+			report = s.coreNodeReport(rows, "unavailable", coreNodeReason(prior))
+		case terminal != nil && !errors.Is(terminal, nodes.ErrRunnerStopped):
+			report = s.coreNodeReport(rows, "unavailable", coreNodeReason(terminal))
 		case interrupted != nil || ctx.Err() != nil:
 			if interrupted == nil {
 				interrupted = ctx.Err()
@@ -177,50 +182,16 @@ func (s *Service) coreNodes(ctx context.Context, source string, opts CoreNodeOpt
 			report = s.coreNodeReport(rows, "unavailable", coreNodeReason(interrupted))
 		}
 	}()
-	if _, err = runner.Start(ctx, path); err != nil {
+	if _, handle, err = runner.StartWithHandle(ctx, path); err != nil {
 		return s.coreNodeReport(rows, "unavailable", coreNodeReason(err)), nil
 	}
-	if runner.SelectedBackend() != backend {
+	if runner.SelectedBackend() != backend || handle == nil {
 		return s.coreNodeReport(rows, "unavailable", "core_unavailable"), nil
 	}
-	live := func(name string, expected nodes.Endpoint) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := runner.Err(); err != nil {
-			return err
-		}
-		endpoints := runner.Endpoints() // never reuse a startup endpoint snapshot
-		ep, ok := endpoints[name]
-		if !ok || len(endpoints) != len(names) || ep.Backend != backend || ep != expected {
-			return nodes.ErrRunnerExit
-		}
-		return nil
-	}
-	// Existing runner API has no revocation channel. Observe its validity gate
-	// while requests block; pre-dial/post-read/final gates also check synchronously.
-	done := make(chan struct{})
-	var monitor sync.WaitGroup
-	monitor.Add(1)
-	go func() {
-		defer monitor.Done()
-		ticker := time.NewTicker(5 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if runner.Err() != nil || len(runner.Endpoints()) != len(names) {
-					cancel()
-					return
-				}
-			}
-		}
-	}()
-	defer func() { close(done); monitor.Wait() }()
+	// Logical revocation is a signal, not a 5ms poll. Stop this watcher BEFORE
+	// our intentional Stop so ErrRunnerStopped does not cancel a valid report.
+	stopWatch := watchCoreRun(ctx, handle, cancel)
+	defer stopWatch()
 	// Four workers, independent transport/client per node, no shared connections,
 	// no retry and a fixed whole-batch budget including startup.
 	jobs := make(chan int)
@@ -235,9 +206,9 @@ func (s *Service) coreNodes(ctx context.Context, source string, opts CoreNodeOpt
 					rows[i].Reason = "core_unavailable"
 					continue
 				}
-				gate := func() error { return live(names[i], ep) }
 				nodeCtx, nodeCancel := context.WithTimeout(ctx, coreNodeBudget)
-				client, cleanup, e := coreHTTPClient(ep.HTTP, target.roots, gate)
+				gate := coreRunGate(handle, names[i], ep)
+				client, cleanup, e := newCoreHTTPClient(nodeCtx, ep.HTTP, target.roots, gate, handle.Err)
 				if e != nil {
 					nodeCancel()
 					rows[i].Reason = coreNodeReason(e)
@@ -253,7 +224,7 @@ func (s *Service) coreNodes(ctx context.Context, source string, opts CoreNodeOpt
 				if nodeCtx.Err() != nil {
 					cancel()
 				}
-				if liveErr := gate(); liveErr != nil {
+				if liveErr := gate(nodeCtx); liveErr != nil {
 					e = liveErr
 					cancel()
 				}
@@ -275,21 +246,7 @@ func (s *Service) coreNodes(ctx context.Context, source string, opts CoreNodeOpt
 	}
 	close(jobs)
 	wg.Wait()
-	reason := ""
-	if runner.Err() != nil || len(runner.Endpoints()) != len(names) {
-		reason = "core_unavailable"
-	} else if ctx.Err() != nil {
-		reason = coreNodeReason(ctx.Err())
-	}
-	for i := range rows {
-		if rows[i].Status != "observed" && reason == "" {
-			reason = "batch_incomplete"
-		}
-	}
-	if reason != "" {
-		return s.coreNodeReport(rows, "unavailable", reason), nil
-	}
-	return s.coreNodeReport(rows, "completed", ""), nil
+	return s.publishCoreNodes(ctx, handle, rows), nil
 }
 
 func readCoreSource(source string) ([]byte, error) {
@@ -333,61 +290,24 @@ func queryCoreEgress(ctx context.Context, endpoint string, target coreProbeTarge
 		return "", err
 	}
 	defer cleanup()
-	return queryCoreEgressClient(ctx, client, target.url, gate)
+	return queryCoreEgressClient(ctx, client, target.url, func(context.Context) error { return gate() })
 }
 
 // Shared authenticated loopback client; only the runner proxy may be dialed.
 func coreHTTPClient(endpoint string, roots *x509.CertPool, gate func() error) (*http.Client, func(), error) {
-	if err := gate(); err != nil {
-		return nil, nil, err
-	}
-	proxy, err := url.Parse(endpoint)
-	if err != nil || proxy.User == nil || proxy.User.Username() == "" || proxy.Hostname() != "127.0.0.1" || proxy.Port() == "" || proxy.Path != "" || proxy.RawQuery != "" || proxy.Fragment != "" || (proxy.Scheme != "http" && proxy.Scheme != "socks5") {
-		return nil, nil, ErrNodeMeasurementUnavailable
-	}
-	if pw, ok := proxy.User.Password(); !ok || pw == "" {
-		return nil, nil, ErrNodeMeasurementUnavailable
-	}
-	dialer := &net.Dialer{Timeout: coreProbeBudget}
-	transport := &http.Transport{
-		Proxy: http.ProxyURL(proxy), DisableKeepAlives: true, DisableCompression: true,
-		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots},
-		TLSHandshakeTimeout: coreProbeBudget, ResponseHeaderTimeout: coreProbeBudget,
-		MaxResponseHeaderBytes: 8192, MaxConnsPerHost: 1,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if err := gate(); err != nil {
-				return nil, err
-			}
-			// HTTP transport may only dial the selected authenticated local proxy.
-			if addr != proxy.Host {
-				return nil, ErrNodeMeasurementUnavailable
-			}
-			conn, err := dialer.DialContext(ctx, network, addr)
-			if err != nil {
-				return nil, err
-			}
-			if err := gate(); err != nil {
-				conn.Close()
-				return nil, err
-			}
-			return conn, nil
-		},
-	}
-
-	client := &http.Client{Transport: transport, Timeout: coreProbeBudget, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return client, transport.CloseIdleConnections, nil
+	return newCoreHTTPClient(context.Background(), endpoint, roots, func(context.Context) error { return gate() }, nil)
 }
 
-func queryCoreEgressClient(ctx context.Context, client *http.Client, rawURL string, gate func() error) (string, error) {
-	if err := gate(); err != nil {
+func queryCoreEgressClient(ctx context.Context, client *http.Client, rawURL string, gate coreGate) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, coreProbeBudget)
+	defer cancel()
+	if err := gate(ctx); err != nil {
 		return "", err
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
 		return "", ErrNodeMeasurementUnavailable
 	}
-	ctx, cancel := context.WithTimeout(ctx, coreProbeBudget)
-	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", ErrNodeMeasurementUnavailable
@@ -408,7 +328,7 @@ func queryCoreEgressClient(ctx context.Context, client *http.Client, rawURL stri
 	if err != nil || len(b) > 256 {
 		return "", ErrNodeMeasurementUnavailable
 	}
-	if err := gate(); err != nil {
+	if err := gate(ctx); err != nil {
 		return "", err
 	}
 	ip, ok := publicCoreEgressIP(strings.TrimSpace(string(b)))

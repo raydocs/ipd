@@ -59,7 +59,7 @@ type CoreNodeUnlockObservation struct {
 
 var coreUnlockRegion = regexp.MustCompile(`^[A-Z]{2}$`)
 
-func queryCoreUnlock(ctx context.Context, client *http.Client, ids []string, mapURL func(string) string, gate func() error) ([]CoreNodeUnlockObservation, error) {
+func queryCoreUnlock(ctx context.Context, client *http.Client, ids []string, mapURL func(string) string, gate coreGate) ([]CoreNodeUnlockObservation, error) {
 	allowed := make(map[string]bool)
 	for _, id := range ids {
 		for _, u := range coreUnlockURLs[id] {
@@ -74,7 +74,7 @@ func queryCoreUnlock(ctx context.Context, client *http.Client, ids []string, map
 		getter.failed = false
 		result := engine.Check(ctx, []string{id})[0]
 		row := CoreNodeUnlockObservation{Service: id, Status: unlock.Abstain, Evidence: "unrecognized_or_unavailable"}
-		if !getter.failed && gate() == nil && ctx.Err() == nil {
+		if !getter.failed && gate(ctx) == nil && ctx.Err() == nil {
 			switch result.Status {
 			case unlock.Yes, unlock.No, unlock.Partial, unlock.OriginalsOnly, unlock.AppOnly, unlock.WebOnly:
 				row.Status = result.Status
@@ -95,7 +95,7 @@ func queryCoreUnlock(ctx context.Context, client *http.Client, ids []string, map
 	if err := ctx.Err(); err != nil {
 		return out, err
 	}
-	if err := gate(); err != nil {
+	if err := gate(ctx); err != nil {
 		return out, err
 	}
 	return out, nil
@@ -105,7 +105,7 @@ type coreUnlockGetter struct {
 	client      *http.Client
 	allowed     map[string]bool
 	mapURL      func(string) string // unexported function-level fixture seam only
-	gate        func() error
+	gate        coreGate
 	calls       int
 	failed      bool
 	interrupted error
@@ -113,7 +113,7 @@ type coreUnlockGetter struct {
 
 func (g *coreUnlockGetter) Get(ctx context.Context, rawURL string, headers map[string]string) (result unlock.Response) {
 	fail := func() unlock.Response { g.failed = true; return unlock.Response{Err: ErrNodeMeasurementUnavailable} }
-	if g.interrupted != nil || !g.allowed[rawURL] || g.calls >= coreUnlockRequests || ctx.Err() != nil || g.gate() != nil {
+	if g.interrupted != nil || !g.allowed[rawURL] || g.calls >= coreUnlockRequests || ctx.Err() != nil {
 		return fail()
 	}
 	g.calls++
@@ -139,6 +139,9 @@ func (g *coreUnlockGetter) Get(ctx context.Context, rawURL string, headers map[s
 			g.interrupted = err
 		}
 	}()
+	if g.gate(ctx) != nil {
+		return fail()
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return fail()
@@ -180,7 +183,7 @@ func (g *coreUnlockGetter) Get(ctx context.Context, rawURL string, headers map[s
 	default:
 		return fail()
 	}
-	if ctx.Err() != nil || g.gate() != nil {
+	if ctx.Err() != nil || g.gate(ctx) != nil {
 		return fail()
 	}
 	// Only this challenge header is needed by Engine. Nothing else leaves here.

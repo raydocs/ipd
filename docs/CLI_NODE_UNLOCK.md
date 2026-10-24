@@ -1,27 +1,30 @@
 # Explicit per-node unlock increment
 
-## Acceptance boundary
+## Scope and dependency
 
-Success means an explicit `nodes --measure --unlock <comma IDs>` runs the shared
-unlock engine through the **same still-live authenticated loopback runner endpoint**
-as each node's egress probe, with no host/network fallback. Two real helper child
-processes and local HTTPS fixtures must prove distinct ordered observations,
-conservative marker decisions, budgets and whole-batch lifetime revocation.
-Default PR25 egress-only invocation must make no additional requests. Offline must
-start no children and send no requests. Reports remain overall `abstain`.
+Success means explicit `nodes --measure --unlock <comma IDs>` runs the unchanged
+shared unlock engine through the same still-live authenticated loopback runner
+endpoint as each node's egress probe, with no host/network fallback. Output stays
+overall `abstain`; provisional observations are discarded on whole-run failure.
 
-Dependencies: PR23 runner `8331260018a4b34cc4874e0ea0ba30271a52a24f` and accepted
-PR25 egress `676aabffbf08a40010570bc04bc2049cf5072212`. This branch starts at the
-exact PR25 implementation head, **not** the parent coordinator's summary/doc
-history, and ordinarily synchronizes fetched `origin/main`. The independent draft
-PR targets `main`; the inherited runner/egress diff is dependency code, not this
-increment. Runner security and shared unlock decision logic are out of scope.
+Dependencies (independent PRs; this Draft still targets **main**):
+- PR23 runner `8331260018a4b34cc4874e0ea0ba30271a52a24f`.
+- Accepted PR25 egress `676aabffbf08a40010570bc04bc2049cf5072212`.
+- Accepted/review-approved PR27 live capability
+  `f69809913caa82dd791c3d02ffa32d3571e26b39` (parent authorization).
 
-No purity, conversion, UI, account-safety, login or actual playback claims. Local
-helpers are not mihomo/sing-box interoperability or real-airport evidence. Parent
-fresh-context independent review/acceptance is still required before integration.
+This branch began at exact PR25, not the parent coordinator summary/doc history.
+PR27 and fetched `origin/main` are ordinarily merged, never force-rebased. The
+unwired merge checkpoint is `1a7845da1e9f0ef33bfeb011b062c5fbddbcfaa1`.
+Own integration diff is measured from that checkpoint; inherited runner changes
+are PR27, not app integration changes. No PR27 runner file or shared unlock
+verdict logic is edited. PR22 remains separate and is tested in isolation only.
 
-## Implemented invocation and limits
+No purity, conversion, UI, account-safety, login or actual-playback claim. Helpers
+are not real mihomo/sing-box binaries, real subscriptions or airport evidence.
+Parent fresh-context full app/CLI review and acceptance are still required.
+
+## Invocation and limits
 
 ```sh
 ipd --lang en --json nodes --measure --backend mihomo \
@@ -29,90 +32,100 @@ ipd --lang en --json nodes --measure --backend mihomo \
 ```
 
 - Explicit selection only: 1–4 unique exact IDs from `apple`, `meta_ai`, `netflix`,
-  `claude`, `chatgpt`. Other shared-catalogue IDs, empty entries, duplicates,
-  whitespace/case variants and excess IDs are rejected before source loading,
-  process startup or requests. CLI `--unlock` requires `--measure`.
-- Each selected node shares one authenticated loopback HTTP client for egress
-  and the dedicated `unlock.Getter`. `unlock.Engine` and runner safety code are
-  unchanged. Resolve is a non-network callback; its method label is not output.
-- Exact HTTPS catalogue request URLs only, including required trace paths;
-  **no redirects**, even catalogue redirects. No cookies, auth headers, arbitrary
-  headers, environment proxy, native DNS, DIRECT fallback or unverified TLS.
+  `claude`, `chatgpt`. Unknown IDs, empty entries, duplicates, whitespace/case
+  variants and excess IDs fail before source loading, startup or requests.
+  CLI `--unlock` requires `--measure`; zh/en help/errors are invocation-local.
+- Default PR25 invocation still makes at most one egress GET/node and no unlock
+  GET. Offline starts no child and makes no request. Default HTTP/MCP Nodes is
+  unchanged. Native input ordering and private metadata boundaries remain intact.
 - At most 12 unlock GET attempts/node, 256 KiB wire and decompressed body/request,
   8 KiB response headers/request, 5s/request, 20s/node including egress, 45s/batch
-  including startup, 4 workers and at most 64 nodes. Thus at most 768 unlock GET
-  attempts/batch plus the unchanged at-most-64 egress GETs. Startup readiness is
-  separate local-only runner protocol probing, not a service request.
+  including startup, 4 workers and at most 64 nodes: at most 768 unlock GET
+  attempts/batch plus at most 64 egress GETs. Readiness is separate local-only
+  runner probing. New live checks are kernel queries, not added service requests.
+- Exact HTTPS catalogue request URLs only, including required trace paths;
+  **no redirects**, even catalogue redirects. No cookies, arbitrary headers,
+  service auth, environment proxy, native DNS, DIRECT fallback or unverified TLS.
+  Resolve is a non-network callback; no engine method label is output.
 - Required-path failures, unknown templates, challenges, redirects, truncated or
   oversized bodies/headers abstain. Request/node/batch deadlines and cancellation
-  invalidate all egress and unlock rows, rather than retaining earlier positives.
-  Other per-service evidence gaps abstain for that service. Output projects only
+  invalidate all egress and unlock rows. Other service evidence gaps abstain for
+  that service. Output contains only original index/backend, validated egress,
   fixed service/status/evidence codes and a validated two-letter region.
-- Test URL mapping and CA roots exist only at unexported function boundaries;
-  no public flag, config, environment variable or service field enables them.
+- URL mapping and CA injection remain unexported function-level fixture seams;
+  no public flag, config, environment or Service field enables them.
 
-## NOT ACCEPTED: live listener ownership blocker
+## PR27 capability integration
 
-The new regression `TestCoreNodeUnlockRevokesWholeBatch/*/lose-owner` exposes a
-remaining requirement that cannot be claimed implemented. A real helper keeps
-its PID and existing authenticated TLS tunnel alive, closes its listener, and
-then returns a recognizable service positive. The batch currently publishes
-`completed`, egress IPs and `apple=yes` instead of clearing everything. This is
-not merely slow cleanup or a request-timeout issue.
+Read `internal/nodes/LIVE_OWNERSHIP.md` for the accepted contract and bounds.
+`StartWithHandle` supplies the single-run opaque handle; app retains no owner PID,
+process path, private owner evidence or duplicate OS ownership implementation.
+Every production per-node gate uses `handle.Check(ctx, name, expectedEndpoint)`,
+not just `runner.Err` or an endpoint-map snapshot:
 
-PR23 verifies kernel listener ownership during startup/final publication, but
-`ExecRunner.Endpoints` / `Err` subsequently expose synchronized process/context
-lifetime only (`runner_state.go: liveEndpoints/failure`); `execute` waits on
-`invalid` after publication. There is no exported endpoint-owner PID/token or
-post-publication ownership revalidation API for the app. Rechecking the endpoint
-map cannot detect this case. Do **not** infer continuing kernel ownership from
-that map or silently weaken the test.
+1. Client creation, before each request, immediately before and after each dial
+   (before returning a socket on which proxy authentication can be sent).
+2. After response headers, after the complete bounded body, and when adopting a
+   service or complete node result.
+3. `handle.CheckAll(batchCtx)` before whole-batch publication, followed by handle
+   and context state gates. A failure from any other node clears every earlier
+   egress/unlock positive, not just the failed node's row.
 
-The task expressly forbids changing runner safety code. No such code was changed,
-no duplicate OS ownership implementation was added, and no public security hook
-was introduced. Parent must authorize a separately reviewed runner API/lifetime
-increment (or explicitly narrow the requirement) before this draft can be accepted.
-No merge, deployment or real-airport use is appropriate for this candidate.
+The node's authenticated HTTP client has an unpooled per-request transport and a
+private active-connection registry. Dial ownership checks inherit the actual
+request context even where net/http detaches a speculative dial context; shorter
+request/node/batch deadlines are not replaced with a new longer budget. Raw
+connection writes additionally check request/handle state before writing.
 
-## Actual regression evidence
+`handle.Done` drives a blocking signal watcher that cancels the entire app batch;
+there is no app 5ms validity ticker. Cancellation closes **active** registered
+sockets, including blocked CONNECT/TLS/body operations, not only idle transports.
+The watcher is stopped/joined before the app's intentional Stop. Stop then reaps
+children and checks terminal errors: `ErrRunnerStopped` alone does not erase a
+validated successful batch, but real prior failure/deadline/exit/ownership loss or
+joined storage/cleanup warnings do. Report cleanup still withholds all positives.
 
-Before implementation, on production files exactly at accepted PR25 `676aabf`
-(the only prior commit here added this dedicated scope document):
+This uses PR27's **observed invalidation and bounded sampling** contract. Neither
+CheckAll nor app state gates are atomic multi-node kernel snapshots. Fast same-PID
+rebinds between observations, the check-to-dial/write window, and the identity of
+an already-connected receiver are **not absolutely authenticated**. Known loss
+prevents later authorization; no claim is made to retract bytes already sent or
+to sandbox malicious same-user processes or trusted cores that delegate sockets.
 
-```text
-go test ./internal/cli -run '^TestCoreNodesUnlockOptInRegression$' -count=1
-FAIL: explicit offline unlock rejected: 节点测量参数无效
-```
+## Historical failures, retained as evidence
 
-The corrected, compiling test actually ran and failed; this is not inferred from
-reading old code. The implemented opt-in test subsequently passed. The two-core
-production fixture checks (distinct IP/region/yes/no, all supported paths), marker,
-challenge/unknown, no-env/no-host-fallback, TLS, body/header/gzip/request budgets,
-offline/default and cancel/deadline/core-exit cases passed in narrow execution.
-The strengthened live-owner-loss regression actually fails for both backends,
-returning completed positives after the listener-revoked marker. It is intentionally
-retained as a blocker, not special-cased away. Helper binaries are not real cores.
+1. Before initial implementation, exact accepted PR25 production files plus the
+   new compiling CLI regression actually ran:
+   `go test ./internal/cli -run '^TestCoreNodesUnlockOptInRegression$' -count=1`
+   **FAIL**: explicit offline unlock was rejected as unknown arguments. The same
+   opt-in regression passed after wiring; this was not inferred from old code.
+2. Code `c00b1bae0ef85ede306a1dc03ccb137b359da33a` / docs head `ba4dafc`:
+   narrow race and full Go both **FAILed** only the two-backend
+   `TestCoreNodeUnlockRevokesWholeBatch/*/lose-owner` cases. A live child closed
+   its listener and returned a positive through an existing authenticated tunnel;
+   the app published `completed`, egress and `apple=yes`. Web judge and isolated
+   PR22 CLI composition passed. This was the original legitimate blocker, not a
+   timeout/cleanup excuse, and the failing assertion has not been removed/skipped.
+3. After ordinary merge of approved PR27 but **before app wiring**, checkpoint
+   `1a7845d` actually ran the unchanged whole revocation test:
+   `go test -p 1 ./internal/app -run '^TestCoreNodeUnlockRevokesWholeBatch$' -count=1 -v`
+   **FAIL**, both `lose-owner` cases still published positives. Merely importing
+   PR27's sampler does not substitute for active request/adoption Check gates.
+4. First integration author run fixed lose-owner, but deadline/exit test setups
+   revoked before the other node could obtain any positive with required fresh
+   checks. Exit injection is now commanded after actual positive/blocked events,
+   not the former 100ms timer. That test's explicit parent deadline is now 1s,
+   not 500ms; the positive-before-failure, all-unknown, cleanup and unchanged 2s
+   completion assertions remain. A separate actual-client test verifies a 500ms
+   request deadline wins over a 2s node deadline at all request/dial/read gates.
+   No production budget increased and lose-owner assertions are unchanged.
 
-Final checks on code head `c00b1bae0ef85ede306a1dc03ccb137b359da33a`
-(the following final evidence-only commit does not change code):
+New app regressions cover old handle/restart separation; an established socket
+losing authority before proxy authentication sends zero bytes; known real listener
+takeover sends zero bytes; background Done cancellation of a blocked independent
+CONNECT peer; and CheckAll failure on another node clearing a real earlier
+IP/service positive. Commands/acknowledgements and channel events order the new
+faults, not guessed sleeps. All fixtures are loopback-only; no public measurement.
 
-- `go test -race -p 1 ./internal/app ./internal/cli -run '^TestCoreNode' -count=1`:
-  **FAIL**, only `RevokesWholeBatch/{mihomo,sing-box}/lose-owner`; app 29.617s,
-  CLI PASS 2.135s; no race-detector diagnostic. This is not a passing race run.
-- `go test -p 1 ./... -count=1`: **FAIL**, same two live-owner-loss subtests;
-  app 28.651s; every other tested package passed, including runner and shared
-  unlock tests. This is not a green full suite.
-- `node --test web/judge.test.mjs`: **PASS**, 1 test.
-- Separate owned detached checkout at the same code head applied PR22 `a25cced`
-  with `git apply --3way --index` cleanly. Its `go test -p 1 ./internal/cli -count=1`
-  **PASS** (4.639s). A direct non-three-way patch first failed on adjacent help
-  context; no PR22 code was merged into this branch. The owned detached checkout
-  was restored and removed after the check.
-- `git diff --check`: PASS. No diff from `676aabf` in `internal/nodes`,
-  `internal/unlock`, `internal/api` or `internal/mcp`.
-- Latest fetched/synchronized `origin/main` at check time:
-  `3a0832284585118d473a7fd08fb4c924831f760b`; future integration must re-fetch.
-
-Raw local logs: `/tmp/ipd-unlock-old25-regression.log`,
-`/tmp/ipd-unlock-final-race.log`, `/tmp/ipd-unlock-final-full.log`,
-`/tmp/ipd-unlock-final-web.log`, `/tmp/ipd-unlock-pr22.log`.
+The original missing-API blocker is now addressed by authorized PR27 integration,
+not by weakening its requirement. Author checks below are not independent review.

@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -92,6 +93,17 @@ func main() {
 	}
 	json.NewEncoder(audit).Encode(map[string]any{"pid": os.Getpid(), "dir": dir, "env": os.Environ(), "origin": origin, "backend": sing})
 	audit.Close()
+	if mode == "exit-event" {
+		go func() {
+			ticker := time.NewTicker(time.Millisecond)
+			defer ticker.Stop()
+			for range ticker.C {
+				if _, err := os.Stat(filepath.Join(filepath.Dir(os.Args[0]), "exit-core")); err == nil {
+					os.Exit(14)
+				}
+			}
+		}()
+	}
 	if mode == "exit-start" {
 		os.Exit(12)
 	}
@@ -102,12 +114,16 @@ func main() {
 	// Test-only lifetime fault: close the listener while keeping the direct
 	// child and established tunnels alive. Production runner ownership checks,
 	// not child-exit detection, must revoke the whole batch.
-	if mode == "lose-owner" {
+	if mode == "lose-owner" || strings.HasPrefix(mode, "control-owner-") {
 		go func() {
 			for {
-				if _, err := os.Stat(filepath.Join(filepath.Dir(os.Args[0]), "revoke-listener")); err == nil {
+				command, ack := "revoke-listener", "listener-revoked"
+				if mode != "lose-owner" {
+					command, ack = mode+".close", mode+".closed"
+				}
+				if _, err := os.Stat(filepath.Join(filepath.Dir(os.Args[0]), command)); err == nil {
 					ln.Close()
-					os.WriteFile(filepath.Join(filepath.Dir(os.Args[0]), "listener-revoked"), []byte("closed"), 0600)
+					os.WriteFile(filepath.Join(filepath.Dir(os.Args[0]), ack), []byte("closed"), 0600)
 					return
 				}
 				time.Sleep(10 * time.Millisecond)
@@ -117,7 +133,7 @@ func main() {
 	for {
 		c, e := ln.Accept()
 		if e != nil {
-			if mode == "lose-owner" {
+			if mode == "lose-owner" || strings.HasPrefix(mode, "control-owner-") {
 				for {
 					time.Sleep(time.Hour)
 				}

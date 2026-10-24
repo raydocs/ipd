@@ -337,10 +337,10 @@ func TestCoreNodeUnlockRevokesWholeBatch(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				if mode == "deadline" {
-					ctx, cancel = context.WithTimeout(context.Background(), 500*time.Millisecond)
+					ctx, cancel = context.WithTimeout(context.Background(), time.Second)
 					defer cancel()
 				}
-				if mode == "cancel" || mode == "lose-owner" {
+				if mode == "cancel" || mode == "lose-owner" || mode == "exit-connect" {
 					go func() {
 						select {
 						case <-positive:
@@ -351,6 +351,8 @@ func TestCoreNodeUnlockRevokesWholeBatch(t *testing.T) {
 						case <-blocked:
 							if mode == "lose-owner" {
 								os.WriteFile(filepath.Join(filepath.Dir(bin), "revoke-listener"), []byte("ready"), 0600)
+							} else if mode == "exit-connect" {
+								os.WriteFile(filepath.Join(filepath.Dir(bin), "exit-core"), nil, 0600)
 							} else {
 								cancel()
 							}
@@ -361,10 +363,14 @@ func TestCoreNodeUnlockRevokesWholeBatch(t *testing.T) {
 				badMode := "fixture-pass"
 				if mode == "exit-connect" || mode == "lose-owner" {
 					badMode = mode
+					if mode == "exit-connect" {
+						badMode = "exit-event"
+					}
 				}
 				input := nativeEgressInput(backend, []string{a.Listener.Addr().String(), b.Listener.Addr().String()}, "fixture-pass", badMode)
 				defer os.Remove(filepath.Join(filepath.Dir(bin), "revoke-listener"))
 				defer os.Remove(filepath.Join(filepath.Dir(bin), "listener-revoked"))
+				defer os.Remove(filepath.Join(filepath.Dir(bin), "exit-core"))
 				start := time.Now()
 				rep, err := New(&config.Config{}, nil).coreNodes(ctx, input, CoreNodeOptions{MihomoBin: bin, SingBoxBin: bin, UnlockIDs: []string{"apple"}}, unlockTarget(target))
 				if err != nil {
@@ -406,7 +412,7 @@ func TestCoreNodeUnlockNoDirectOrEnvironmentFallback(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		got, _ := queryCoreUnlock(context.Background(), client, []string{"apple"}, unlockTarget(target).unlockURL, gate)
+		got, _ := queryCoreUnlock(context.Background(), client, []string{"apple"}, unlockTarget(target).unlockURL, func(context.Context) error { return gate() })
 		close()
 		if got[0].Status != unlock.Abstain {
 			t.Fatal("dead proxy accepted")
@@ -445,12 +451,12 @@ func TestCoreNodeUnlockRequestBudgetAndGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, _ := queryCoreUnlock(context.Background(), untrusted, []string{"apple"}, unlockTarget(target).unlockURL, gate)
+	result, _ := queryCoreUnlock(context.Background(), untrusted, []string{"apple"}, unlockTarget(target).unlockURL, func(context.Context) error { return gate() })
 	untrustedClose()
 	if result[0].Status != unlock.Abstain || hits.Load() != 0 {
 		t.Fatal("unlock TLS verification bypassed")
 	}
-	getter := &coreUnlockGetter{client: client, allowed: map[string]bool{coreUnlockURLs["apple"][0]: true}, mapURL: unlockTarget(target).unlockURL, gate: gate}
+	getter := &coreUnlockGetter{client: client, allowed: map[string]bool{coreUnlockURLs["apple"][0]: true}, mapURL: unlockTarget(target).unlockURL, gate: func(context.Context) error { return gate() }}
 	raw := coreUnlockURLs["apple"][0]
 	if getter.Get(context.Background(), "https://arbitrary.invalid/", nil).Err == nil {
 		t.Fatal("arbitrary URL allowed")
