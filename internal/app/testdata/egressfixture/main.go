@@ -99,9 +99,29 @@ func main() {
 	if e != nil {
 		os.Exit(13)
 	}
+	// Test-only lifetime fault: close the listener while keeping the direct
+	// child and established tunnels alive. Production runner ownership checks,
+	// not child-exit detection, must revoke the whole batch.
+	if mode == "lose-owner" {
+		go func() {
+			for {
+				if _, err := os.Stat(filepath.Join(filepath.Dir(os.Args[0]), "revoke-listener")); err == nil {
+					ln.Close()
+					os.WriteFile(filepath.Join(filepath.Dir(os.Args[0]), "listener-revoked"), []byte("closed"), 0600)
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}()
+	}
 	for {
 		c, e := ln.Accept()
 		if e != nil {
+			if mode == "lose-owner" {
+				for {
+					time.Sleep(time.Hour)
+				}
+			}
 			return
 		}
 		go serve(c, u, pw, origin, mode)

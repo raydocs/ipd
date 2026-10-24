@@ -42,20 +42,22 @@ type CoreNodeOptions struct {
 	Backend    nodes.Backend
 	MihomoBin  string
 	SingBoxBin string
+	UnlockIDs  []string
 }
 
 // CoreNodeObservation contains no source identity or credential-bearing metadata.
 // Index is 1-based and follows the original document sequence, never map order.
 type CoreNodeObservation struct {
-	Index    int           `json:"index"`
-	Backend  nodes.Backend `json:"backend,omitempty"`
-	EgressIP string        `json:"egress_ip,omitempty"`
-	Status   string        `json:"status"`
-	Reason   string        `json:"reason,omitempty"`
+	Index    int                         `json:"index"`
+	Backend  nodes.Backend               `json:"backend,omitempty"`
+	EgressIP string                      `json:"egress_ip,omitempty"`
+	Status   string                      `json:"status"`
+	Reason   string                      `json:"reason,omitempty"`
+	Unlock   []CoreNodeUnlockObservation `json:"unlock,omitempty"`
 }
 
-// CoreNodes is explicit opt-in exit-IP observation, not Nodes' default checker.
-// Even a complete observation is not a reachability/purity/unlock/safety verdict.
+// CoreNodes is explicit opt-in observation, not Nodes' default checker.
+// UnlockIDs adds service markers, never a purity or account-safety verdict.
 func (s *Service) CoreNodes(ctx context.Context, source string, opts CoreNodeOptions) (Report, error) {
 	return s.coreNodes(ctx, source, opts, coreProbeTarget{url: coreEgressURL})
 }
@@ -63,11 +65,16 @@ func (s *Service) CoreNodes(ctx context.Context, source string, opts CoreNodeOpt
 // Tests may inject a loopback HTTPS URL and its trust root only at this unexported
 // function boundary. There is no env, flag, service field or public URL/CA option.
 type coreProbeTarget struct {
-	url   string
-	roots *x509.CertPool
+	url       string
+	roots     *x509.CertPool
+	unlockURL func(string) string // test-only mapping at this unexported boundary
 }
 
 func (s *Service) coreNodes(ctx context.Context, source string, opts CoreNodeOptions, target coreProbeTarget) (report Report, err error) {
+	if err := validateCoreUnlockIDs(opts.UnlockIDs); err != nil {
+		return Report{}, err
+	}
+	opts.UnlockIDs = append([]string(nil), opts.UnlockIDs...)
 	if s.Cfg.Offline {
 		return s.coreNodeReport(nil, "unavailable", "offline"), nil
 	}
@@ -229,7 +236,29 @@ func (s *Service) coreNodes(ctx context.Context, source string, opts CoreNodeOpt
 					continue
 				}
 				gate := func() error { return live(names[i], ep) }
-				ip, e := queryCoreEgress(ctx, ep.HTTP, target, gate)
+				nodeCtx, nodeCancel := context.WithTimeout(ctx, coreNodeBudget)
+				client, cleanup, e := coreHTTPClient(ep.HTTP, target.roots, gate)
+				if e != nil {
+					nodeCancel()
+					rows[i].Reason = coreNodeReason(e)
+					continue
+				}
+				ip, e := queryCoreEgressClient(nodeCtx, client, target.url, gate)
+				if e == nil && len(opts.UnlockIDs) > 0 {
+					rows[i].Unlock, e = queryCoreUnlock(nodeCtx, client, opts.UnlockIDs, target.unlockURL, gate)
+					if e != nil {
+						cancel()
+					}
+				}
+				if nodeCtx.Err() != nil {
+					cancel()
+				}
+				if liveErr := gate(); liveErr != nil {
+					e = liveErr
+					cancel()
+				}
+				cleanup()
+				nodeCancel()
 				if e != nil {
 					rows[i].Reason = coreNodeReason(e)
 					continue
@@ -299,26 +328,30 @@ func readCoreSource(source string) ([]byte, error) {
 // It accepts only authenticated loopback runner endpoints, never env proxy or
 // DIRECT; all failures are evidence gaps. It does not return raw network errors.
 func queryCoreEgress(ctx context.Context, endpoint string, target coreProbeTarget, gate func() error) (string, error) {
-	if err := gate(); err != nil {
+	client, cleanup, err := coreHTTPClient(endpoint, target.roots, gate)
+	if err != nil {
 		return "", err
+	}
+	defer cleanup()
+	return queryCoreEgressClient(ctx, client, target.url, gate)
+}
+
+// Shared authenticated loopback client; only the runner proxy may be dialed.
+func coreHTTPClient(endpoint string, roots *x509.CertPool, gate func() error) (*http.Client, func(), error) {
+	if err := gate(); err != nil {
+		return nil, nil, err
 	}
 	proxy, err := url.Parse(endpoint)
 	if err != nil || proxy.User == nil || proxy.User.Username() == "" || proxy.Hostname() != "127.0.0.1" || proxy.Port() == "" || proxy.Path != "" || proxy.RawQuery != "" || proxy.Fragment != "" || (proxy.Scheme != "http" && proxy.Scheme != "socks5") {
-		return "", ErrNodeMeasurementUnavailable
+		return nil, nil, ErrNodeMeasurementUnavailable
 	}
 	if pw, ok := proxy.User.Password(); !ok || pw == "" {
-		return "", ErrNodeMeasurementUnavailable
+		return nil, nil, ErrNodeMeasurementUnavailable
 	}
-	u, err := url.Parse(target.url)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
-		return "", ErrNodeMeasurementUnavailable
-	}
-	ctx, cancel := context.WithTimeout(ctx, coreProbeBudget)
-	defer cancel()
 	dialer := &net.Dialer{Timeout: coreProbeBudget}
 	transport := &http.Transport{
 		Proxy: http.ProxyURL(proxy), DisableKeepAlives: true, DisableCompression: true,
-		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: target.roots},
+		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots},
 		TLSHandshakeTimeout: coreProbeBudget, ResponseHeaderTimeout: coreProbeBudget,
 		MaxResponseHeaderBytes: 8192, MaxConnsPerHost: 1,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -340,9 +373,22 @@ func queryCoreEgress(ctx context.Context, endpoint string, target coreProbeTarge
 			return conn, nil
 		},
 	}
-	defer transport.CloseIdleConnections()
+
 	client := &http.Client{Transport: transport, Timeout: coreProbeBudget, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.url, nil)
+	return client, transport.CloseIdleConnections, nil
+}
+
+func queryCoreEgressClient(ctx context.Context, client *http.Client, rawURL string, gate func() error) (string, error) {
+	if err := gate(); err != nil {
+		return "", err
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return "", ErrNodeMeasurementUnavailable
+	}
+	ctx, cancel := context.WithTimeout(ctx, coreProbeBudget)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", ErrNodeMeasurementUnavailable
 	}
@@ -497,6 +543,7 @@ func (s *Service) coreNodeReport(rows []CoreNodeObservation, status, reason stri
 		rows = append([]CoreNodeObservation(nil), rows...)
 		for i := range rows {
 			rows[i].EgressIP = ""
+			rows[i].Unlock = nil
 			rows[i].Status = "unknown"
 			rows[i].Reason = reason
 		}
@@ -504,5 +551,12 @@ func (s *Service) coreNodeReport(rows []CoreNodeObservation, status, reason stri
 	if rows == nil {
 		rows = []CoreNodeObservation{}
 	}
-	return Report{Verdict: "abstain", Summary: fmt.Sprintf("%d node egress observations; %s (no purity or unlock assessment)", len(rows), status), Data: map[string]any{"nodes": rows, "measurement_status": status, "measurement_reason": reason}, Sources: []Source{{ID: "node_egress"}}, CachedAt: s.now()}
+	summary := fmt.Sprintf("%d node egress observations; %s (no purity or unlock assessment)", len(rows), status)
+	for _, row := range rows {
+		if len(row.Unlock) > 0 {
+			summary = fmt.Sprintf("%d node observations; %s (no purity, safety, login or playback assessment)", len(rows), status)
+			break
+		}
+	}
+	return Report{Verdict: "abstain", Summary: summary, Data: map[string]any{"nodes": rows, "measurement_status": status, "measurement_reason": reason}, Sources: []Source{{ID: "node_egress"}}, CachedAt: s.now()}
 }
