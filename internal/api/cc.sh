@@ -2,6 +2,8 @@
 # Auditable, no files, no installation, no second script. Requires curl >= 8.4.
 # Origin is bound by server configuration, never inferred from stdin or Host.
 set -f
+# Do not let curl write TLS secrets through an inherited diagnostic setting.
+unset SSLKEYLOGFILE
 LC_ALL=C
 export LC_ALL
 origin='@ORIGIN@'
@@ -30,6 +32,11 @@ if [ -n "${http_proxy+x}${https_proxy+x}${all_proxy+x}${HTTP_PROXY+x}${HTTPS_PRO
     proxy=true
 fi
 printf 'proxy_environment_set=%s\n' "$proxy"
+# curl deliberately ignores uppercase HTTP_PROXY (CGI security convention).
+# Refuse ambiguous intent rather than translating credentials or going direct.
+if [ -n "${HTTP_PROXY+x}" ]; then
+    unknown 'cc: HTTP_PROXY is ignored by curl; review proxy configuration explicitly' 3
+fi
 printf 'origin=%s\n' "$origin"
 printf '%s\n' 'source=configured-origin /cc/ip transport-peer observation (may be a reverse proxy)'
 printf '%s\n' 'Proxy environment can affect the path; no direct fallback. Not an account safety or DNS leak test.'

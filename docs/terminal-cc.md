@@ -104,3 +104,12 @@ curlrc isolation, secret non-upload, missing curl/offline and unchanged files.
 
 No deployment, real-server IPs, external accounts or real-service probes needed.
 Independent security review remains required before merging/deploying.
+
+### Inherited diagnostic and proxy environment
+
+The script unsets `SSLKEYLOGFILE` inside its own shell before invoking curl,
+preventing TLS key-log writes without modifying the caller's environment.
+If uppercase `HTTP_PROXY` is present, it returns unknown before the observation
+request: curl ignores that variable, so silently proceeding could violate the
+user's intended proxy path. It neither translates proxy credentials nor chooses
+a direct fallback. Review proxy configuration explicitly before retrying.
