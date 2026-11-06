@@ -12,6 +12,7 @@ import (
 
 // Config is the process-wide configuration.
 type Config struct {
+	CCOrigin          string
 	Domain            string
 	HTTPAddr          string
 	DNSAddr           string
@@ -67,6 +68,7 @@ type Config struct {
 // the binary runs without a domain or a public address.
 func FromEnv() *Config {
 	c := &Config{
+		CCOrigin:          env("IPD_CC_ORIGIN", ""),
 		Domain:            env("IPD_DOMAIN", "localhost"),
 		HTTPAddr:          env("IPD_HTTP_ADDR", "127.0.0.1:8787"),
 		DNSAddr:           env("IPD_DNS_ADDR", "127.0.0.1:5353"),

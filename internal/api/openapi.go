@@ -207,6 +207,8 @@ func paths() map[string]any {
 		body(op, description, required, oa{"application/json": m})
 	}
 	bad := oa{"400": errorResponse("Invalid input, unavailable provider/store, or service error; plain text even with Accept: application/json.")}
+	add("/cc", "get", "Read-only terminal script", "POSIX sh bound only to configured IPD_CC_ORIGIN; no-store and no application IP logs. Requires installed curl >= 8.4.", textResponse("Auditable shell script", "text/plain"), oa{"503": textResponse("Offline or missing/invalid trusted origin; error script exits 3.", "text/plain")})
+	add("/cc/ip", "get", "Terminal transport-peer observation", "No-store, no lookups or persistent application logs; ignores forwarding headers. A proxy peer is not necessarily user egress.", textResponse("Canonical IPv4/IPv6 or unknown", "text/plain"), oa{"503": textResponse("Offline: unknown", "text/plain")})
 	add("/healthz", "get", "Liveness", "Fixed response, no negotiation or rate limiting.", oa{"description": "Alive", "content": oa{"text/plain": oa{"schema": oa{"type": "string"}, "example": "ok\n"}}}, nil)
 	delete(objectResponses(paths, "/healthz", "get"), "429")
 	add("/metrics", "get", "Prometheus metrics", "Non-public clients receive 404 unless metrics are configured public.", textResponse("Prometheus exposition", "text/plain"), oa{"404": errorResponse("Metrics hidden from public clients.")})
