@@ -111,3 +111,17 @@ Linux runtime 或真实核心通过。用户态非原子及拨号窗口等边界
 需要先释放磁盘空间，再恢复窄测试、race、PR22 组合与 main 全候选组合；不反复重编译，
 不删除共享缓存/其他线程文件，不拿作者历史通过日志替代本轮独立运行证据。
 后续依赖测量链路的功能暂不继续堆叠；已有代码和失败测试保持在 Draft，未合并或部署。
+
+## 2026-11-06 恢复验收
+
+已 fetch：main 仍为 `3a08322`；所有开放 PR base 均为 main。GitHub 报告 #17/#19
+CONFLICTING，其余 #13/#15/#16/#18/#20–#23/#25–#27 MERGEABLE；正式 reviewDecision 为空，
+不把委派审查等同 GitHub review approval。#17/#19 冲突及旧节点方案兼容仍待处理。
+
+#26 最新 `b81228e` 已验收：独立完整审查发现重复 Content-Encoding 误判 P2，补丁拒绝多字段
+和不支持链；实际旧版反证失败，新版 73 组 fixture × 双 backend 的聚焦独立 race 通过。
+本分支 Go/Node/app/CLI/nodes race 通过；基于 main 的 #13/#15/#20/#22/#23/#25/#26/#27
+组合 Go/Node/七包 race 全通过。#22 帮助上下文冲突精确保留 locale 与节点帮助后复测。
+证据位于 `/tmp/ipd-resume-20261106/`，独立审查 `/private/tmp/ipd-pr26-r2.AwxEd9/REVIEW.txt`。
+先前磁盘阻塞是历史记录，现已解除；真实核心、Linux runtime、真实机场和线上服务仍未验证。
+保持全部 PR 未合并；后续优先浏览器本地 AI 体检，终端只读脚本另开增量。
