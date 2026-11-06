@@ -13,3 +13,6 @@ CI本阶段未查询；委派审查不是GitHub正式批准。真实浏览器/�
 阶段更新：#29 只读 /cc 已验收，head89d1e59；两轮独立 review 闭合 P2，总控补强 P3 测试。
 分支与候选组合 Go/Node/API-config-web race 通过，最终断言窄 race 通过；真实线上未验证。
 改动在独立 #29，无 #28 混入。下一批：场景评分与 litmus，之后可选多源等既定优先级。
+
+阶段更新：#30 五场景证据模型验收，head6a1f3e0，独立R2 approve；分支/组合Go-Node-race通过。
+缺测/矛盾弃权，非封号概率或业务成功保证。下一独立增量：litmus挑战证据，真实CFBotScore不可得。

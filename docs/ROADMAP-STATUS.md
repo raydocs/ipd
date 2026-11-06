@@ -148,3 +148,13 @@ R2 无 P1/P2，25 项独立检查通过。总控补强 P3 断言，要求 exit=3
 分支和含 #28/节点候选的组合 Go/Node/API-config-web race 通过；最终追加仅测试断言。
 证据 `/tmp/ipd-resume-20261106/pr29-*`。本地真实 sh/curl/TLS fixtures 不等于线上部署验证。
 不安装、不写配置、不上传本机信号；HTTP 请求仍向服务器暴露 transport peer，不承诺外部日志为空。
+
+## #30 场景证据评分验收（2026-11-06）
+
+Draft #30 `6a1f3e0` 已验收，未合并。五场景版本化输出，不改既有 purity/residential。
+缺测/未知时间/过期/冲突时 score=null、abstain，电商/邮件仍未采集。等权端点覆盖不是商业重要性、
+账号安全或封号概率。独立 R1 发现子端点相反事实折叠为 limited 漏冲突，限定修正后 R2 approve；
+96 矩阵、10 个 mock Getter 实际 Unlock 路径通过，旧生产反例实际失败。
+总控分支与最新候选组合 Go/Node/score-app-API-MCP race 均通过。
+证据 `/tmp/ipd-resume-20261106/pr30-*`、`/tmp/ipd-pr30-r2.T95HkB/`。
+仅代码和本地合成测试通过，真实账号/服务可用性、预测准确率和线上效果未验证。
