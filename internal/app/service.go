@@ -225,14 +225,15 @@ func (s *Service) Risk(ctx context.Context, ip string, live bool) (Report, error
 			"score": pur.Score, "grade": pur.Grade, "verdict": pur.Verdict,
 			"factors": pur.Factors, "confidence": pur.Confidence, "model_version": pur.ModelVersion,
 		},
-		"residential":   cls,
-		"native":        nat,
-		"confidence":    pur.Confidence,
-		"disagreements": p.Disagreements,
-		"conflicts":     conflictsOrEmpty(p),
-		"anycast":       p.Anycast,
-		"enrichment":    enrich,
-		"dnsbl":         hits,
+		"residential":          cls,
+		"native":               nat,
+		"confidence":           pur.Confidence,
+		"disagreements":        p.Disagreements,
+		"conflicts":            conflictsOrEmpty(p),
+		"anycast":              p.Anycast,
+		"enrichment":           enrich,
+		"dnsbl":                hits,
+		"scenario_assessments": score.AssessScenarios(s.now(), nil),
 	}
 	sum := fmt.Sprintf("purity %d %s (%s); residential %s; native %s", pur.Score, pur.Grade, pur.Verdict, cls.Class, nat.Verdict)
 	if cls.SuspectedFakeResidential {
@@ -761,9 +762,14 @@ func (s *Service) routeReport(paths []route.Path, claimed, direction, measuremen
 // Unlock runs egress-side service checks.
 func (s *Service) Unlock(ctx context.Context, ids []string) Report {
 	if s.Checks == nil {
-		return Report{Verdict: "abstain", Summary: "unlock engine missing", Data: map[string]any{"results": []any{}}, Sources: []Source{}}
+		return Report{Verdict: "abstain", Summary: "unlock engine missing", Data: map[string]any{"results": []any{}, "scenario_assessments": score.AssessScenarios(s.now(), nil)}, Sources: []Source{}}
 	}
+	collectedAt := s.now()
 	res := s.Checks.Check(ctx, ids)
+	observations := make([]score.ScenarioObservation, 0, len(res))
+	for _, r := range res {
+		observations = append(observations, score.ScenarioObservation{Source: "unlock", Result: r, ObservedAt: &collectedAt})
+	}
 	unavailable, unknown, limited := 0, 0, 0
 	for _, r := range res {
 		switch r.Status {
@@ -785,7 +791,7 @@ func (s *Service) Unlock(ctx context.Context, ids []string) Report {
 	case unavailable > 0 || limited > 0:
 		v = "ok_with_caveats"
 	}
-	return Report{Verdict: v, Summary: fmt.Sprintf("%d services, %d unavailable, %d limited, %d unknown", len(res), unavailable, limited, unknown), Data: map[string]any{"results": res}, Sources: []Source{{ID: "unlock"}}, CachedAt: s.now()}
+	return Report{Verdict: v, Summary: fmt.Sprintf("%d services, %d unavailable, %d limited, %d unknown", len(res), unavailable, limited, unknown), Data: map[string]any{"results": res, "scenario_assessments": score.AssessScenarios(s.now(), observations)}, Sources: []Source{{ID: "unlock"}}, CachedAt: s.now()}
 }
 
 // GoogleRegion is the egress-side 送中 check.

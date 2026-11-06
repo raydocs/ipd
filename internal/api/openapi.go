@@ -58,7 +58,8 @@ func reportSchemas() oa {
 		objectSchema(oa{"ip": oa{"type": "string"}, "error": oa{"type": "string"}}, "ip", "error"),
 	}}
 	schemas := oa{
-		"Source": source, "Report": report, "BatchRow": batchRow,
+		"Source": source, "ScenarioAssessment": scenarioAssessmentSchema(),
+		"Report": report, "BatchRow": batchRow,
 		"BatchReport":         reportWithData(objectSchema(oa{"results": arraySchema(schemaRef("BatchRow"))}, "results")),
 		"JobSubmissionReport": reportWithData(objectSchema(oa{"job_id": oa{"type": "string"}, "status": oa{"const": "done"}, "result": oa{"description": "The completed operation's data only, NOT a nested Report."}}, "job_id", "status", "result")),
 		"JobReport":           reportWithData(objectSchema(oa{"status": oa{"type": "string"}, "result": oa{"anyOf": []any{schemaRef("Report"), oa{"type": "object", "maxProperties": 0}}, "description": "Stored full Report for jobs created by these HTTP routes, or {} when no result is stored. Stored reports are not retroactively snapshot-enriched."}}, "status", "result")),
@@ -69,7 +70,7 @@ func reportSchemas() oa {
 		"SharedReport":        reportWithData(objectSchema(oa{"body": oa{"type": "string"}}, "body")),
 		"LabelReport":         reportWithData(objectSchema(oa{"ok": oa{"const": true}}, "ok")),
 		"WebRTCReport":        reportWithData(objectSchema(oa{"leak": oa{"type": "boolean"}, "candidate_count": oa{"type": "integer"}}, "leak", "candidate_count")),
-		"RiskReport":          reportWithData(objectSchema(oa{"native": objectSchema(oa{"verdict": oa{"type": "string", "enum": []string{"native", "broadcast", "abstain"}, "description": "Three-state classification, not a boolean. Missing evidence is abstain."}})})),
+		"RiskReport":          reportWithData(objectSchema(oa{"scenario_assessments": arraySchema(schemaRef("ScenarioAssessment")), "native": objectSchema(oa{"verdict": oa{"type": "string", "enum": []string{"native", "broadcast", "abstain"}, "description": "Three-state classification, not a boolean. Missing evidence is abstain."}})})),
 		"PowChallenge":        objectSchema(oa{"challenge": oa{"type": "string"}, "bits": oa{"type": "integer"}}, "challenge", "bits"),
 		"Error":               stringSchema("Plain-text http.Error body, generally ending in a newline; not a JSON error envelope."),
 		"JSONRPCError":        objectSchema(oa{"jsonrpc": oa{"const": "2.0"}, "id": oa{}, "error": objectSchema(oa{"code": oa{"type": "integer"}, "message": oa{"type": "string"}, "data": oa{}}, "code", "message")}, "jsonrpc", "id", "error"),
@@ -345,4 +346,13 @@ func LLMS(domain string) string {
 - Every answer starts with a verdict line; factors[] explains the score; sources[] shows raw provider fields.
 - Low confidence is reported as abstain (无法判定). Sharing is off unless IPD_SHARE_ENABLED=true. The server does not store WebRTC candidate addresses.
 `, domain, domain, domain)) + "\n"
+}
+
+// scenarioAssessmentSchema is additive: older Risk fixtures remain valid.
+func scenarioAssessmentSchema() oa {
+	str := oa{"type": "string"}
+	fraction := oa{"type": "number", "minimum": 0, "maximum": 1}
+	observation := objectSchema(oa{"source": str, "result": objectSchema(oa{"service": str, "status": str, "evidence": str}, "service", "status"), "observed_at": oa{"type": []string{"string", "null"}, "format": "date-time"}}, "source", "result", "observed_at")
+	check := objectSchema(oa{"id": str, "weight": oa{"const": 1}, "status": oa{"enum": []string{"missing", "unknown", "observed", "denied", "limited"}}, "reason": str, "priority": oa{"enum": []int{10, 20, 30, 40}}, "observations": arraySchema(observation)}, "id", "weight", "status", "reason", "priority", "observations")
+	return objectSchema(oa{"scenario": oa{"enum": []string{"ai", "social", "streaming", "ecommerce", "email"}}, "model_version": oa{"const": "scenario-evidence-v1"}, "scope": str, "score": oa{"type": []string{"integer", "null"}, "minimum": 0, "maximum": 100}, "abstained": oa{"type": "boolean"}, "coverage": fraction, "confidence": fraction, "assessed_at": oa{"type": "string", "format": "date-time"}, "checks": arraySchema(check)}, "scenario", "model_version", "scope", "score", "abstained", "coverage", "confidence", "assessed_at", "checks")
 }
