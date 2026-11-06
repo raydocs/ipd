@@ -79,8 +79,13 @@ func AssessScenarios(now time.Time, input []ScenarioObservation) []ScenarioAsses
 				return string(x) < string(y)
 			})
 			state, value, invalid := "", 0, false
+			var facts *unlock.Result
 			for _, o := range c.Observations {
 				s, v := scenarioVote(now, o)
+				if facts != nil && (facts.Status != o.Result.Status || facts.Evidence != o.Result.Evidence || facts.Region != o.Result.Region) {
+					invalid = true
+				}
+				facts = &o.Result
 				if s == "unknown" {
 					invalid = true
 				}

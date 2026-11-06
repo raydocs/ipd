@@ -149,3 +149,32 @@ func TestScenarioDuplicatesDoNotReweight(t *testing.T) {
 		t.Fatal("denial must be checked first")
 	}
 }
+
+func TestScenarioOppositeLimitedFactsConflict(t *testing.T) {
+	for _, tc := range []struct {
+		scenario              int
+		service, a, ae, b, be string
+	}{
+		{2, "netflix", "originals_only", "original=yes licensed=no", "partial", "original=no licensed=yes"},
+		{0, "chatgpt", "web_only", "web=yes app=no", "app_only", "web=no app=yes"},
+	} {
+		var in []ScenarioObservation
+		for _, id := range scenarioSpecs[tc.scenario].services {
+			evidence := "recognized positive marker"
+			if id == "chatgpt" {
+				evidence = "web=yes app=yes"
+			}
+			if id == "netflix" {
+				evidence = "original=yes licensed=yes"
+			}
+			if id != tc.service {
+				in = append(in, scenarioFixture(id, "yes", evidence))
+			}
+		}
+		in = append(in, scenarioFixture(tc.service, tc.a, tc.ae), scenarioFixture(tc.service, tc.b, tc.be))
+		got := AssessScenarios(scenarioClock, in)[tc.scenario]
+		if got.Score != nil || !got.Abstained || got.Coverage >= 1 || got.Confidence >= 1 {
+			t.Fatalf("opposite endpoint facts scored: %+v", got)
+		}
+	}
+}
