@@ -99,7 +99,7 @@ func (e Engine) Check(ctx context.Context, id string, offline bool) Result {
 		r.Reason = "header_limit"
 	case !encodingOK(resp.Header):
 		r.Reason = "unsupported_encoding"
-	case resp.Status == http.StatusPartialContent || resp.Header.Get("Content-Range") != "":
+	case resp.Status == http.StatusPartialContent || len(resp.Header.Values("Content-Range")) > 0:
 		r.Reason = "partial_response"
 	case len(resp.Body) > maxBody:
 		r.Reason = "body_limit"
@@ -210,15 +210,16 @@ func googleMarkup(body string) (message, form, widget bool) {
 	}
 	base, _ := url.Parse(target("google_search"))
 	var text strings.Builder
-	var invalidBase bool
+	var invalidBase, baseSeen bool
 	var visit func(*html.Node)
 	visit = func(n *html.Node) {
 		if n.Type == html.ElementNode && (n.Data == "script" || n.Data == "style" || n.Data == "template" || n.Data == "noscript") {
 			return
 		}
-		if n.Type == html.ElementNode && n.Data == "base" {
+		if n.Type == html.ElementNode && n.Namespace == "" && n.Data == "base" && !baseSeen {
 			for _, a := range n.Attr {
 				if a.Key == "href" {
+					baseSeen = true
 					u, e := url.Parse(a.Val)
 					if e != nil {
 						invalidBase = true
@@ -249,13 +250,15 @@ func googleMarkup(body string) (message, form, widget bool) {
 		if n.Type == html.TextNode {
 			text.WriteString(n.Data)
 		}
-		if n.Type == html.ElementNode {
+		if n.Type == html.ElementNode && n.Namespace == "" {
+			actionSeen := false
 			for _, a := range n.Attr {
-				if n.Data == "form" && a.Key == "action" {
+				if n.Data == "form" && a.Key == "action" && !actionSeen {
+					actionSeen = true
 					u, e := url.Parse(a.Val)
 					if e == nil {
 						u = base.ResolveReference(u)
-						if u.Scheme == "https" && u.Host == "www.google.com" && u.User == nil && u.Path == "/sorry/index" {
+						if u.Scheme == "https" && u.Host == "www.google.com" && u.User == nil && u.EscapedPath() == "/sorry/index" {
 							form = true
 						}
 					}

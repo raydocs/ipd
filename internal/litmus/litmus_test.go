@@ -142,3 +142,22 @@ func TestGoogleRepresentationBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestGoogleDOMAndRangeAmbiguity(t *testing.T) {
+	for _, body := range []string{
+		`<base href="https://www.google.com/wrong/"><base href="https://www.google.com/">` + strings.ReplaceAll(googleBody, `action="/sorry/index"`, `action="sorry/index"`),
+		strings.ReplaceAll(googleBody, `/sorry/index`, `/sorry%2Findex`),
+		`<svg><form action="/sorry/index"></form></svg><div class="g-recaptcha"></div>Our systems have detected unusual traffic from your computer network.`,
+		`<math><form action="/sorry/index"></form></math><div class="g-recaptcha"></div>Our systems have detected unusual traffic from your computer network.`,
+	} {
+		if m, f, w := googleMarkup(body); m && f {
+			t.Fatalf("ambiguous markup voted (widget %v)", w)
+		}
+	}
+	e := Engine{Get: getterFunc(func(_ context.Context, u string, _ map[string]string) unlock.Response {
+		return unlock.Response{FinalURL: u, Status: 200, Body: googleBody, Header: http.Header{"Content-Type": {"text/html"}, "Content-Range": {"", "bytes 0-50/100"}}}
+	})}
+	if r := e.Check(context.Background(), "google_search", false); r.ChallengeObserved == Yes {
+		t.Fatal("partial range voted")
+	}
+}
