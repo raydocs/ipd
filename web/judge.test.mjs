@@ -99,6 +99,13 @@ test('page waits for clicks; collection/import make no request or storage writes
   assert.match(node('ai-groups').textContent, /192.0.2.1/);
   assert.equal(probes, 1); // import does not collect private signals
   assert.equal(requests.length, 0);
+  const lastGood = node('ai-groups').textContent;
+  node('ai-report').value = '{"data":{"schema_version":"ai-diagnosis-v1","per_service":[{"evidence":' + '['.repeat(8000) + '0' + ']'.repeat(8000) + '}]}}';
+  handlers['ai-import:click']();
+  assert.match(node('ai-status').textContent, /无法解析/);
+  assert.equal(node('ai-groups').textContent, lastGood);
+  assert.doesNotThrow(() => handlers['ai-collect:click']());
+  assert.equal(node('ai-groups').textContent, lastGood);
   node('ai-report').value = '<bad>';
   handlers['ai-import:click']();
   assert.match(node('ai-status').textContent, /无法解析/);
@@ -108,4 +115,17 @@ test('page waits for clicks; collection/import make no request or storage writes
   assert.equal(requests[0][0], '/v1/me');
   assert.equal(requests[0][1].body, undefined);
   assert.equal(node('out').hidden, false);
+});
+
+test('malformed evidence remains unknown and mapped addresses share canonical identity', () => {
+  const a = ai.buildAIReview(report([trace('a', '192.0.2.1'), trace('b', '::ffff:c000:201'), trace('c', '::ffff:192.0.2.1'), trace('d', '192.000.002.001')]), null);
+  assert.equal(a.groups.length, 1);
+  assert.equal(a.groups[0].observations.length, 3);
+  assert.equal(a.unknown.length, 1);
+  const bad = report([{url: '', status: 'observed', ip: '192.0.2.2', evidence: {}}]);
+  bad.data.per_service = [{ service: 'claude', availability: {}, evidence: {} }];
+  const b = ai.buildAIReview(bad, null);
+  assert.equal(b.groups.length, 0);
+  assert.equal(b.services[0].availability, 'unknown');
+  assert.ok(b.fixes.some(f => f.issue === 'evidence_missing'));
 });

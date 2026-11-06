@@ -63,8 +63,8 @@
   // Separate in-memory state: never included in query or WebRTC uploads.
   var aiSignals = null;
   var aiReport = null;
-  function showAI() {
-    var review = window.ipdJudge.buildAIReview(aiReport, aiSignals);
+  function showAI(candidate) {
+    var review = window.ipdJudge.buildAIReview(candidate === undefined ? aiReport : candidate, aiSignals);
     document.getElementById("ai-results").hidden = false;
     document.getElementById("ai-signals").textContent = aiSignals ? JSON.stringify(aiSignals, null, 2) : "unknown（尚未点击采集）";
     document.getElementById("ai-groups").textContent = JSON.stringify({
@@ -89,8 +89,8 @@
       if (text.length > 200000) throw new Error("报告过大");
       var rep = JSON.parse(text);
       if (!rep || !rep.data || rep.data.schema_version !== "ai-diagnosis-v1") throw new Error("需要 ai-diagnosis-v1 报告");
+      showAI(rep);
       aiReport = rep;
-      showAI();
       document.getElementById("ai-status").textContent = "已本地解析，未上传；原报告中的 cached_at 不冒充逐项测量时间。";
     } catch (_) {
       document.getElementById("ai-status").textContent = "无法解析：请输入有效且不超过 200000 字符的 ai-diagnosis-v1 JSON 报告；仍显示上次成功解析的证据。";

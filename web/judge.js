@@ -93,12 +93,26 @@ function evidenceIP(raw) {
   if (typeof raw !== 'string') return '';
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(raw)) {
     var parts = raw.split('.');
-    return parts.every(function (p) { return Number(p) <= 255; }) ? parts.map(Number).join('.') : '';
+    return parts.every(function (p) { return /^(0|[1-9][0-9]*)$/.test(p) && Number(p) <= 255; }) ? parts.map(Number).join('.') : '';
   }
-  if (!/^[0-9a-f:]+$/i.test(raw) || raw.indexOf(':') < 0) return '';
-  return attempt(function () { return new URL('http:' + '//[' + raw + ']/').hostname.slice(1, -1); }) || '';
+  if (!/^[0-9a-f:.]+$/i.test(raw) || raw.indexOf(':') < 0) return '';
+  var canonical = attempt(function () { return new URL('http:' + '//[' + raw + ']/').hostname.slice(1, -1); }) || '';
+  var mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(canonical);
+  if (mapped) { var n = parseInt(mapped[1], 16), m = parseInt(mapped[2], 16); return [n >> 8, n & 255, m >> 8, m & 255].join('.'); }
+  return canonical;
 }
+function validateAIReport(report) {
+  var pending = [[report, 0]], count = 0;
+  while (pending.length) {
+    var item = pending.pop(), value = item[0];
+    if (++count > 10000 || item[1] > 12) throw new Error('Report structure limit');
+    if (typeof value === 'string' && value.length > 10000) throw new Error('Report text limit');
+    if (value && typeof value === 'object') Object.keys(value).forEach(function (key) { pending.push([value[key], item[1] + 1]); });
+  }
+}
+function aiText(value) { return typeof value === 'string' && value.trim() ? value : 'unknown'; }
 function buildAIReview(report, local) {
+  validateAIReport(report);
   var data = report && report.data;
   if (!data || data.schema_version !== 'ai-diagnosis-v1') data = {};
   var traces = Array.isArray(data.traces) ? data.traces : [];
@@ -106,13 +120,13 @@ function buildAIReview(report, local) {
   var unknown = [];
   traces.forEach(function (t) {
     if (!t || typeof t !== 'object') return;
-    var ip = t.status === 'observed' && t.evidence ? evidenceIP(t.ip) : '';
+    var ip = t.status === 'observed' && aiText(t.evidence) !== 'unknown' ? evidenceIP(t.ip) : '';
     var row = {
-      source: typeof t.url === 'string' ? t.url : 'unknown',
+      source: aiText(t.url),
       scope: 'imported probe-process trace; not browser path or account evidence',
       observed_at: null, // v1 traces have no measurement timestamp; cached_at is not one.
-      status: typeof t.status === 'string' ? t.status : 'unknown',
-      evidence: typeof t.evidence === 'string' ? t.evidence : 'unknown'
+      status: ['observed', 'error', 'abstain', 'unknown'].indexOf(t.status) >= 0 ? t.status : 'unknown',
+      evidence: aiText(t.evidence)
     };
     if (ip && row.source !== 'unknown') {
       if (!groups[ip]) groups[ip] = { ip: ip, observations: [] };
@@ -126,7 +140,7 @@ function buildAIReview(report, local) {
   });
   unknown.sort(compare);
   var services = (Array.isArray(data.per_service) ? data.per_service : []).filter(function (s) { return s && typeof s === 'object'; }).map(function (s) {
-    return { service: s.service || 'unknown', status: s.status || 'unknown', evidence: s.evidence || 'unknown', availability: s.availability || 'unknown', observed_at: null };
+    return { service: aiText(s.service), status: ['yes', 'no', 'partial', 'originals_only', 'app_only', 'web_only', 'idc', 'error', 'abstain'].indexOf(s.status) >= 0 ? s.status : 'unknown', evidence: aiText(s.evidence), availability: ['available', 'unavailable', 'limited'].indexOf(s.availability) >= 0 && aiText(s.evidence) !== 'unknown' && ['yes', 'no', 'partial', 'originals_only', 'app_only', 'web_only', 'idc'].indexOf(s.status) >= 0 ? s.availability : 'unknown', observed_at: null };
   }).sort(compare);
   var fixes = [];
   function fix(priority, issue, how) { fixes.push({ priority: priority, issue: issue, how: how }); }
