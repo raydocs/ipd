@@ -1,6 +1,6 @@
 // Package nodes checks a local proxy subscription. The server never fetches
-// the subscription URL. mihomo, when used, is an external process and is not
-// linked.
+// the subscription URL. Proxy cores, when used, are external processes and
+// are not linked.
 package nodes
 
 import (
@@ -10,11 +10,9 @@ import (
 	"maps"
 	"net/url"
 	"os"
-	"os/exec"
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,23 +28,25 @@ type Proxy struct {
 
 // Outcome is one node's check.
 type Outcome struct {
-	Name      string `json:"name"`
-	Server    string `json:"server"`
-	EgressIP  string `json:"egress_ip,omitempty"`
-	Grade     string `json:"grade,omitempty"`
-	AI        string `json:"ai,omitempty"`
-	TikTok    string `json:"tiktok,omitempty"`
-	Reachable bool   `json:"reachable"`
-	Error     string `json:"error,omitempty"`
-	Renamed   string `json:"renamed"`
+	Backend   Backend `json:"backend,omitempty"`
+	Name      string  `json:"name"`
+	Server    string  `json:"server"`
+	EgressIP  string  `json:"egress_ip,omitempty"`
+	Grade     string  `json:"grade,omitempty"`
+	AI        string  `json:"ai,omitempty"`
+	TikTok    string  `json:"tiktok,omitempty"`
+	Reachable bool    `json:"reachable"`
+	Error     string  `json:"error,omitempty"`
+	Renamed   string  `json:"renamed"`
 }
 
-// Checker scores one local SOCKS endpoint. Tests substitute a fake.
+// Checker scores one local SOCKS endpoint. ExecRunner supplies an authenticated
+// socks5:// URL (including credentials); callers must not log it. Tests substitute a fake.
 type Checker interface {
 	Check(ctx context.Context, name, socks string) (egress, grade, ai, tiktok string, err error)
 }
 
-// Runner starts and stops an external mihomo. A nil runner means "do not
+// Runner starts and stops an external proxy core. A nil runner means "do not
 // start a process"; the checker is then called with an empty socks address
 // and may still classify the node as unreachable.
 type Runner interface {
@@ -58,6 +58,9 @@ type Runner interface {
 type File struct {
 	Raw     map[string]any
 	Proxies []Proxy
+	// Preserve representation-tree safety across Parse -> Run serialization.
+	runnerYAMLInvalid bool
+	runnerURI         bool
 }
 
 // Parse accepts clash YAML, a raw proxy URI, or a base64 subscription body.
@@ -82,7 +85,7 @@ func Parse(text string) (File, error) {
 			}
 			proxies = append(proxies, p)
 		}
-		return File{Raw: map[string]any{"proxies": proxiesToMaps(proxies)}, Proxies: proxies}, nil
+		return File{Raw: map[string]any{"proxies": proxiesToMaps(proxies)}, Proxies: proxies, runnerURI: true}, nil
 	}
 	var doc map[string]any
 	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
@@ -107,7 +110,8 @@ func Parse(text string) (File, error) {
 	if len(proxies) == 0 {
 		return File{}, fmt.Errorf("no proxies in document")
 	}
-	return File{Raw: doc, Proxies: proxies}, nil
+	_, runnerErr := runnerDocument([]byte(text))
+	return File{Raw: doc, Proxies: proxies, runnerYAMLInvalid: runnerErr != nil}, nil
 }
 
 func parseURI(line string) (Proxy, error) {
@@ -134,16 +138,27 @@ func Run(ctx context.Context, f File, checker Checker, runner Runner, rename fun
 	}
 	socks := map[string]string{}
 	if runner != nil {
-		path, err := writeTemp(f)
-		if err != nil {
-			return nil, "", err
+		var err error
+		if fileRunner, ok := runner.(interface {
+			StartFile(context.Context, File) (map[string]string, error)
+		}); ok {
+			socks, err = fileRunner.StartFile(ctx, f)
+		} else {
+			path, writeErr := writeTemp(f)
+			if writeErr != nil {
+				return nil, "", writeErr
+			}
+			defer os.Remove(path)
+			socks, err = runner.Start(ctx, path)
 		}
-		defer os.Remove(path)
-		socks, err = runner.Start(ctx, path)
 		if err != nil {
 			return nil, "", err
 		}
 		defer runner.Stop()
+	}
+	var backend Backend
+	if identity, ok := runner.(interface{ SelectedBackend() Backend }); ok {
+		backend = identity.SelectedBackend()
 	}
 	if checker == nil {
 		checker = unreachable{}
@@ -157,7 +172,7 @@ func Run(ctx context.Context, f File, checker Checker, runner Runner, rename fun
 		go func(i int, p Proxy) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			o := Outcome{Name: p.Name, Server: p.Server}
+			o := Outcome{Name: p.Name, Server: p.Server, Backend: backend}
 			addr := socks[p.Name]
 			egress, grade, ai, tt, err := checker.Check(ctx, p.Name, addr)
 			if err != nil || egress == "" {
@@ -520,38 +535,5 @@ func num(v any) int {
 		return int(n)
 	default:
 		return 0
-	}
-}
-
-// Mihomo is an external-process runner. It is not linked into ipd.
-type Mihomo struct {
-	Bin string
-	cmd *exec.Cmd
-	mu  sync.Mutex
-}
-
-func (m *Mihomo) Start(ctx context.Context, configPath string) (map[string]string, error) {
-	bin := m.Bin
-	if bin == "" {
-		bin = "mihomo"
-	}
-	if _, err := exec.LookPath(bin); err != nil {
-		return nil, fmt.Errorf("mihomo not on PATH (it is an external GPL process and is not bundled): %w", err)
-	}
-	// -t validates. The real listener ports are assigned by the caller via a
-	// generated config; this starter only checks the binary can be executed.
-	c := exec.CommandContext(ctx, bin, "-t", "-f", configPath)
-	c.WaitDelay = 2 * time.Second
-	if out, err := c.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("mihomo -t: %v %s", err, out)
-	}
-	return map[string]string{}, nil
-}
-
-func (m *Mihomo) Stop() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.cmd != nil && m.cmd.Process != nil {
-		_ = m.cmd.Process.Kill()
 	}
 }

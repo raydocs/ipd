@@ -10,7 +10,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"ipd/internal/api"
@@ -55,6 +57,11 @@ func Main(args []string) int {
 			fmt.Fprint(os.Stdout, latencyHelp)
 			return 0
 		}
+	case "nodes":
+		if len(rest) == 2 && (rest[1] == "--help" || rest[1] == "-h") {
+			fmt.Fprint(os.Stdout, opts.lang.text(coreNodesHelp))
+			return 0
+		}
 	case "version":
 		fmt.Printf("ipd %s\n", version.Version)
 		return 0
@@ -87,6 +94,11 @@ func Main(args []string) int {
 	svc := app.New(cfg, db)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	if cmd == "nodes" {
+		var stop context.CancelFunc
+		ctx, stop = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		defer stop() // Let CoreNodes defer Stop/Wait before CLI termination.
+	}
 	rep, err := dispatch(ctx, svc, cfg, opts, cmd, rest[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, opts.lang.error(err))
@@ -212,10 +224,7 @@ func dispatch(ctx context.Context, svc *app.Service, cfg *config.Config, g globa
 		}
 		return svc.PortCheck(ctx, args[0], 25, "global")
 	case "nodes":
-		if len(args) == 0 {
-			return app.Report{}, cliError("用法：ipd nodes <订阅或 clash.yaml>")
-		}
-		return svc.Nodes(ctx, args[0], nil)
+		return coreNodesCmd(ctx, svc, args)
 	case "batch":
 		raw, err := io.ReadAll(os.Stdin)
 		if err != nil {
