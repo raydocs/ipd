@@ -129,3 +129,13 @@ test('malformed evidence remains unknown and mapped addresses share canonical id
   assert.equal(b.services[0].availability, 'unknown');
   assert.ok(b.fixes.some(f => f.issue === 'evidence_missing'));
 });
+
+ test('contradictory status and availability always remain unknown', () => {
+  const mapping = { yes: 'available', no: 'unavailable', partial: 'limited', originals_only: 'limited', app_only: 'limited', web_only: 'limited', idc: 'limited' };
+  for (const [status, expected] of Object.entries(mapping)) {
+    for (const availability of ['available', 'unavailable', 'limited']) {
+      const r = report([]); r.data.per_service = [{service: 'claude', status, availability, evidence: 'synthetic marker'}];
+      assert.equal(ai.buildAIReview(r, null).services[0].availability, availability === expected ? expected : 'unknown');
+    }
+  }
+ });

@@ -110,6 +110,10 @@ function validateAIReport(report) {
     if (value && typeof value === 'object') Object.keys(value).forEach(function (key) { pending.push([value[key], item[1] + 1]); });
   }
 }
+function aiAvailability(status, availability) {
+  var expected = { yes: 'available', no: 'unavailable', partial: 'limited', originals_only: 'limited', app_only: 'limited', web_only: 'limited', idc: 'limited' };
+  return Object.prototype.hasOwnProperty.call(expected, status) && expected[status] === availability ? availability : 'unknown';
+}
 function aiText(value) { return typeof value === 'string' && value.trim() ? value : 'unknown'; }
 function buildAIReview(report, local) {
   validateAIReport(report);
@@ -140,7 +144,7 @@ function buildAIReview(report, local) {
   });
   unknown.sort(compare);
   var services = (Array.isArray(data.per_service) ? data.per_service : []).filter(function (s) { return s && typeof s === 'object'; }).map(function (s) {
-    return { service: aiText(s.service), status: ['yes', 'no', 'partial', 'originals_only', 'app_only', 'web_only', 'idc', 'error', 'abstain'].indexOf(s.status) >= 0 ? s.status : 'unknown', evidence: aiText(s.evidence), availability: ['available', 'unavailable', 'limited'].indexOf(s.availability) >= 0 && aiText(s.evidence) !== 'unknown' && ['yes', 'no', 'partial', 'originals_only', 'app_only', 'web_only', 'idc'].indexOf(s.status) >= 0 ? s.availability : 'unknown', observed_at: null };
+    return { service: aiText(s.service), status: ['yes', 'no', 'partial', 'originals_only', 'app_only', 'web_only', 'idc', 'error', 'abstain'].indexOf(s.status) >= 0 ? s.status : 'unknown', evidence: aiText(s.evidence), availability: ['available', 'unavailable', 'limited'].indexOf(s.availability) >= 0 && aiText(s.evidence) !== 'unknown' && ['yes', 'no', 'partial', 'originals_only', 'app_only', 'web_only', 'idc'].indexOf(s.status) >= 0 ? aiAvailability(s.status, s.availability) : 'unknown', observed_at: null };
   }).sort(compare);
   var fixes = [];
   function fix(priority, issue, how) { fixes.push({ priority: priority, issue: issue, how: how }); }
