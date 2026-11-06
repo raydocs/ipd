@@ -137,3 +137,14 @@ web/API/app/CLI/nodes/lookup/ingest/route/probe 九包 race 全通过。
 这仅代表代码与本地 Node/VM、Go 验证通过；未验证真实浏览器布局、辅助技术或线上服务。
 没有新增上传/持久化，服务观察不能冒充浏览器路径或账号实际所见；缺测不报告 safe。
 下一独立增量为 `/cc` 终端只读脚本，不塞进 #28。
+
+## #29 只读终端脚本验收（2026-11-06）
+
+Draft #29 `89d1e59` 已验收，未合并。可信 `IPD_CC_ORIGIN` 绑定生成 /cc 脚本，
+仅同 origin /cc/ip 只读请求，peer 观察不冒充反代后真实用户或其他服务所见出口。
+独立 R1 的 SSLKEYLOGFILE 写密钥、HTTP_PROXY 被忽略导致直连两项 P2 已修，旧版实际反证失败；
+R2 无 P1/P2，25 项独立检查通过。总控补强 P3 断言，要求 exit=3、零请求、unknown、无凭据，
+窄 race 通过。caller 环境不变，脚本内部清理密钥日志变量；uppercase HTTP_PROXY 返回 unknown。
+分支和含 #28/节点候选的组合 Go/Node/API-config-web race 通过；最终追加仅测试断言。
+证据 `/tmp/ipd-resume-20261106/pr29-*`。本地真实 sh/curl/TLS fixtures 不等于线上部署验证。
+不安装、不写配置、不上传本机信号；HTTP 请求仍向服务器暴露 transport peer，不承诺外部日志为空。
