@@ -40,7 +40,7 @@ func TestCCUppercaseHTTPProxy(t *testing.T) {
 	defer ts.Close()
 	out, code := runCC(t, strings.Replace(ccScript, "@ORIGIN@", ts.URL, 1), t.TempDir(), []string{"HTTP_PROXY=http://user:PRIVATE_SENTINEL@127.0.0.1:1", "NO_PROXY=", "no_proxy="})
 	t.Logf("exit=%d direct_requests=%d proxy_presence=%t credentials_printed=%t", code, calls.Load(), strings.Contains(out, "proxy_environment_set=true"), strings.Contains(out, "PRIVATE_SENTINEL"))
-	if code == 0 && calls.Load() != 0 {
+	if code != 3 || calls.Load() != 0 || !strings.Contains(out, "terminal_observed_ip=unknown") || strings.Contains(out, "PRIVATE_SENTINEL") {
 		t.Fatal("uppercase HTTP_PROXY was reported present but curl connected directly")
 	}
 }
