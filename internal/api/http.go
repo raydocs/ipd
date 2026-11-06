@@ -42,6 +42,8 @@ func New(svc *app.Service) *Server {
 // Handler is the full mux.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /cc", s.cc)
+	mux.HandleFunc("GET /cc/ip", s.ccIP)
 	mux.HandleFunc("GET /favicon.ico", s.favicon)
 	mux.HandleFunc("GET /favicon.svg", s.favicon)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +93,11 @@ func (s *Server) Handler() http.Handler {
 			_, age := s.Svc.Look.SnapshotAge(time.Now().UTC())
 			w.Header().Set("X-IPD-Snapshot-Age", strconv.FormatInt(age, 10))
 		}
-		s.note(r)
+		if r.URL.Path == "/cc" || r.URL.Path == "/cc/ip" {
+			w.Header().Set("Cache-Control", "no-store")
+		} else {
+			s.note(r)
+		}
 		if !s.allow(r) {
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 			return
