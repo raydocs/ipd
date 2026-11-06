@@ -167,7 +167,14 @@ func (g *coreUnlockGetter) Get(ctx context.Context, rawURL string, headers map[s
 	if err != nil || len(body) > coreUnlockBody {
 		return fail()
 	}
-	encoding := resp.Header.Get("Content-Encoding")
+	encodings := resp.Header.Values("Content-Encoding")
+	if len(encodings) > 1 {
+		return fail()
+	}
+	encoding := ""
+	if len(encodings) == 1 {
+		encoding = strings.TrimSpace(encodings[0])
+	}
 	switch {
 	case encoding == "" || strings.EqualFold(encoding, "identity"):
 	case strings.EqualFold(encoding, "gzip"):

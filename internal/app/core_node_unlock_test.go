@@ -178,6 +178,10 @@ func TestCoreNodeUnlockMarkersAndFailureAbstention(t *testing.T) {
 		{"large_header", `KadabraRootContainer`, 200, "", unlock.Abstain},
 		{"broken_body", `KadabraRootContainer`, 200, "", unlock.Abstain},
 		{"gzip", `KadabraRootContainer`, 200, "", unlock.Yes},
+		{"gzip_duplicate", `KadabraRootContainer`, 200, "", unlock.Abstain},
+		{"gzip_duplicate_large", `KadabraRootContainer` + strings.Repeat("x", coreUnlockBody), 200, "", unlock.Abstain},
+		{"encoding_duplicate_identity", `KadabraRootContainer`, 200, "", unlock.Abstain},
+		{"encoding_chain", `KadabraRootContainer`, 200, "", unlock.Abstain},
 		{"gzip_large", `KadabraRootContainer` + strings.Repeat("x", coreUnlockBody), 200, "", unlock.Abstain},
 		{"gzip_broken", `KadabraRootContainer`, 200, "", unlock.Abstain},
 		{"unsupported_encoding", `KadabraRootContainer`, 200, "", unlock.Abstain},
@@ -213,6 +217,13 @@ func TestCoreNodeUnlockMarkersAndFailureAbstention(t *testing.T) {
 				if tc.name == "unsupported_encoding" {
 					w.Header().Set("Content-Encoding", "br")
 				}
+				if tc.name == "encoding_duplicate_identity" {
+					w.Header().Add("Content-Encoding", "identity")
+					w.Header().Add("Content-Encoding", "br")
+				}
+				if tc.name == "encoding_chain" {
+					w.Header().Set("Content-Encoding", "identity, gzip")
+				}
 				if strings.HasPrefix(tc.name, "gzip") {
 					var b bytes.Buffer
 					gz := gzip.NewWriter(&b)
@@ -223,6 +234,9 @@ func TestCoreNodeUnlockMarkersAndFailureAbstention(t *testing.T) {
 						body = body[:len(body)-4]
 					}
 					w.Header().Set("Content-Encoding", "gzip")
+					if strings.HasPrefix(tc.name, "gzip_duplicate") {
+						w.Header().Add("Content-Encoding", "br")
+					}
 					w.Write(body)
 					return
 				}
@@ -247,7 +261,7 @@ func TestCoreNodeUnlockMarkersAndFailureAbstention(t *testing.T) {
 	if redirects.Load() != 0 {
 		t.Fatal("redirect followed")
 	}
-	assertEgressReaped(t, bin, 15)
+	assertEgressReaped(t, bin, 19)
 }
 
 func TestCoreNodeUnlockSelectionOfflineAndDefault(t *testing.T) {
