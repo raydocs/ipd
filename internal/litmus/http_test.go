@@ -31,6 +31,10 @@ func TestLiveBoundaries(t *testing.T) {
 		bad            bool
 	}{
 		{"plain", "", []byte("body"), false},
+		{"identity_case", "Identity", []byte("body"), false},
+		{"identity_upper", "IDENTITY", []byte("body"), false},
+		{"identity_space", " identity ", []byte("body"), false},
+		{"gzip_case", "GZip", zipped("body"), false},
 		{"gzip", "gzip", zipped("body"), false},
 		{"gzip_bomb", "gzip", zipped(strings.Repeat("x", maxBody+1)), true},
 		{"wire_limit", "", bytes.Repeat([]byte("x"), maxBody+1), true},

@@ -44,7 +44,14 @@ func TestEvidence(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := Engine{Get: getterFunc(func(_ context.Context, u string, _ map[string]string) unlock.Response {
-				return unlock.Response{FinalURL: u, Status: tc.status, Body: tc.body, Header: tc.h}
+				h := tc.h.Clone()
+				if h == nil {
+					h = make(http.Header)
+				}
+				if h.Get("Content-Type") == "" {
+					h.Set("Content-Type", "text/html")
+				}
+				return unlock.Response{FinalURL: u, Status: tc.status, Body: tc.body, Header: h}
 			})}
 			r := e.Check(context.Background(), tc.id, false)
 			if r.ChallengeObserved != tc.want || r.CaptchaObserved != tc.cap || r.Reason != tc.reason {
@@ -110,5 +117,28 @@ func TestErrorStatusAndSpoofedScoreAbstain(t *testing.T) {
 	r := e.Check(context.Background(), "cloudflare_home", false)
 	if r.ChallengeObserved != Abstain || r.CFBotScore != nil || r.Reason != "unexpected_status" {
 		t.Fatal(r)
+	}
+}
+
+func TestGoogleRepresentationBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, contentType string
+		status                  int
+		contentRange            string
+	}{
+		{"json", googleBody, "application/json", 200, ""}, {"plain", googleBody, "text/plain", 200, ""},
+		{"template", "<template>" + googleBody + "</template>", "text/html", 200, ""},
+		{"foreign_base", "<base href=\"https://example.invalid/\">" + googleBody, "text/html", 200, ""},
+		{"partial", googleBody, "text/html", 206, "bytes 0-50/100"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := Engine{Get: getterFunc(func(_ context.Context, u string, _ map[string]string) unlock.Response {
+				return unlock.Response{FinalURL: u, Status: tc.status, Body: tc.body, Header: http.Header{"Content-Type": {tc.contentType}, "Content-Range": {tc.contentRange}}}
+			})}
+			r := e.Check(context.Background(), "google_search", false)
+			if r.ChallengeObserved == Yes || r.CaptchaObserved == Yes {
+				t.Fatalf("non-active/incomplete representation voted: %+v", r)
+			}
+		})
 	}
 }

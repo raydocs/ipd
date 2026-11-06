@@ -3,7 +3,9 @@ package litmus
 
 import (
 	"context"
+	"mime"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -97,6 +99,8 @@ func (e Engine) Check(ctx context.Context, id string, offline bool) Result {
 		r.Reason = "header_limit"
 	case !encodingOK(resp.Header):
 		r.Reason = "unsupported_encoding"
+	case resp.Status == http.StatusPartialContent || resp.Header.Get("Content-Range") != "":
+		r.Reason = "partial_response"
 	case len(resp.Body) > maxBody:
 		r.Reason = "body_limit"
 	case strings.TrimSpace(resp.Body) == "":
@@ -161,7 +165,14 @@ func detect(r Result, resp unlock.Response) Result {
 	if cf {
 		add("cf_mitigated_challenge", "challenge_observed", "cloudflare")
 	}
-	message, form, widget := googleMarkup(resp.Body)
+	message, form, widget := false, false, false
+	contentTypes := resp.Header.Values("Content-Type")
+	if len(contentTypes) == 1 {
+		mediaType, _, err := mime.ParseMediaType(contentTypes[0])
+		if err == nil && mediaType == "text/html" {
+			message, form, widget = googleMarkup(resp.Body)
+		}
+	}
 	google := r.Target == "google_search" && message && form
 	if google {
 		add("google_unusual_traffic", "challenge_observed", "google")
@@ -193,28 +204,63 @@ func detect(r Result, resp unlock.Response) Result {
 // traffic message plus an actual Google sorry form; documentation snippets and
 // generic CAPTCHA widgets are not enough. Unknown templates remain unknown.
 func googleMarkup(body string) (message, form, widget bool) {
-	z := html.NewTokenizer(strings.NewReader(body))
+	doc, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		return
+	}
+	base, _ := url.Parse(target("google_search"))
 	var text strings.Builder
-	skip := ""
-	for {
-		tt := z.Next()
-		if tt == html.ErrorToken {
-			break
+	var invalidBase bool
+	var visit func(*html.Node)
+	visit = func(n *html.Node) {
+		if n.Type == html.ElementNode && (n.Data == "script" || n.Data == "style" || n.Data == "template" || n.Data == "noscript") {
+			return
 		}
-		switch tt {
-		case html.StartTagToken, html.SelfClosingTagToken:
-			tok := z.Token()
-			if tok.Data == "script" || tok.Data == "style" {
-				skip = tok.Data
-			}
-			if skip != "" {
-				continue
-			}
-			for _, a := range tok.Attr {
-				if tok.Data == "form" && a.Key == "action" && (a.Val == "/sorry/index" || a.Val == "https://www.google.com/sorry/index") {
-					form = true
+		if n.Type == html.ElementNode && n.Data == "base" {
+			for _, a := range n.Attr {
+				if a.Key == "href" {
+					u, e := url.Parse(a.Val)
+					if e != nil {
+						invalidBase = true
+					} else {
+						resolved := base.ResolveReference(u)
+						if resolved.Scheme != "https" || resolved.Host != "www.google.com" || resolved.User != nil {
+							invalidBase = true
+						} else {
+							base = resolved
+						}
+					}
+					break
 				}
-				if tok.Data == "div" && a.Key == "class" {
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			visit(c)
+		}
+	}
+	visit(doc)
+	if invalidBase {
+		return
+	}
+	visit = func(n *html.Node) {
+		if n.Type == html.ElementNode && (n.Data == "script" || n.Data == "style" || n.Data == "template" || n.Data == "noscript") {
+			return
+		}
+		if n.Type == html.TextNode {
+			text.WriteString(n.Data)
+		}
+		if n.Type == html.ElementNode {
+			for _, a := range n.Attr {
+				if n.Data == "form" && a.Key == "action" {
+					u, e := url.Parse(a.Val)
+					if e == nil {
+						u = base.ResolveReference(u)
+						if u.Scheme == "https" && u.Host == "www.google.com" && u.User == nil && u.Path == "/sorry/index" {
+							form = true
+						}
+					}
+				}
+				if n.Data == "div" && a.Key == "class" {
 					for _, c := range strings.Fields(a.Val) {
 						if c == "g-recaptcha" {
 							widget = true
@@ -222,17 +268,12 @@ func googleMarkup(body string) (message, form, widget bool) {
 					}
 				}
 			}
-		case html.EndTagToken:
-			tok := z.Token()
-			if tok.Data == skip {
-				skip = ""
-			}
-		case html.TextToken:
-			if skip == "" {
-				text.Write(z.Text())
-			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			visit(c)
 		}
 	}
+	visit(doc)
 	message = strings.Contains(strings.ToLower(text.String()), "our systems have detected unusual traffic from your computer network")
 	return
 }

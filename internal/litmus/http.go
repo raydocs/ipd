@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"ipd/internal/unlock"
@@ -65,7 +66,8 @@ func (g liveGetter) Get(ctx context.Context, raw string, headers map[string]stri
 	}
 	wire := &io.LimitedReader{R: resp.Body, N: maxBody + 1}
 	var reader io.Reader = wire
-	if resp.Header.Get("Content-Encoding") != "" && resp.Header.Get("Content-Encoding") != "identity" {
+	encoding := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
+	if encoding == "gzip" {
 		gz, e := gzip.NewReader(wire)
 		if e != nil {
 			r.Err = errObservation
