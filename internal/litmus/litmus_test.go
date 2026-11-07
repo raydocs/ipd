@@ -161,3 +161,10 @@ func TestGoogleDOMAndRangeAmbiguity(t *testing.T) {
 		t.Fatal("partial range voted")
 	}
 }
+
+func TestGoogleAbsoluteActionIndependentOfForeignBase(t *testing.T) {
+	body := `<base href="https://example.invalid/">` + strings.ReplaceAll(googleBody, `action="/sorry/index"`, `action="https://www.google.com/sorry/index"`)
+	if m, f, w := googleMarkup(body); !m || !f || !w {
+		t.Fatal("absolute canonical action lost")
+	}
+}

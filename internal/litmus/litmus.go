@@ -225,11 +225,9 @@ func googleMarkup(body string) (message, form, widget bool) {
 						invalidBase = true
 					} else {
 						resolved := base.ResolveReference(u)
-						if resolved.Scheme != "https" || resolved.Host != "www.google.com" || resolved.User != nil {
-							invalidBase = true
-						} else {
-							base = resolved
-						}
+						// The first base controls relative references only. A canonical
+						// absolute Google action is still independently valid.
+						base = resolved
 					}
 					break
 				}
