@@ -50,6 +50,8 @@ func Main(args []string) int {
 	case "help", "-h", "--help":
 		fmt.Fprint(os.Stdout, opts.lang.text(helpText))
 		return 0
+	case "litmus":
+		return litmusCmd(cfg, opts, rest[1:])
 	case "latency":
 		if len(rest) == 2 && (rest[1] == "--help" || rest[1] == "-h") {
 			fmt.Fprint(os.Stdout, latencyHelp)
@@ -744,6 +746,7 @@ const helpText = `ipd — 给 agent 用的地址情报与网络质量
   ipd 1.2.3.4              查询并解释纯净度、住宅、原生
   ipd check                一站式：出口、AI、解锁、泄露、回程
   ipd ai [--cli]           Claude / ChatGPT 等是否安全
+  ipd litmus <catalog-id>   公开挑战证据（显式请求；非评分）
   ipd unlock [服务…]       解锁检测
   ipd leak                 DNS 泄露（WebRTC 请用浏览器页）
   ipd route [--return] [--claimed cn2gia] [目标]

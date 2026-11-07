@@ -220,6 +220,7 @@ const englishHelp = `ipd — address intelligence and network quality for agents
   ipd 192.0.2.1            Explain IP purity, residential class and native status
   ipd check                Egress, AI, unlocking, leaks and return routes
   ipd ai [--cli]           Assess Claude / ChatGPT and other AI services
+  ipd litmus <catalog-id>   Public challenge evidence (explicit; not scoring)
   ipd unlock [services…]   Check service availability
   ipd leak                 DNS leaks (use the browser page for WebRTC)
   ipd route [--return] [--claimed cn2gia] [target]
