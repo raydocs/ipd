@@ -158,3 +158,17 @@ Draft #30 `6a1f3e0` 已验收，未合并。五场景版本化输出，不改既
 总控分支与最新候选组合 Go/Node/score-app-API-MCP race 均通过。
 证据 `/tmp/ipd-resume-20261106/pr30-*`、`/tmp/ipd-pr30-r2.T95HkB/`。
 仅代码和本地合成测试通过，真实账号/服务可用性、预测准确率和线上效果未验证。
+
+## #31 最新状态：组合阻塞，未验收（2026-11-07）
+
+已 fetch，main 仍为 `3a08322`。确认 #31 远端原头 `ecef48c`；完整 R2 反例复跑发现
+一项已记录的保守漏检（异域 base 加绝对 Google 表单），总控限定修正至 `55ba82b`。
+完整 R2 HTML/HTTP/输出/资源反例 race 通过，四项 P2 边界闭环；分支 Go/Node/litmus-CLI race 通过。
+CF Bot Score 仍为 null/unknown，真实公网挑战页未验证，未合并。
+
+最终候选组合首跑在未修改的 sing-box cancel-live 就绪超时失败；一次有界复测 Go 全套及
+Node 通过，但 nodes race 再次就绪超时（cancel-live/stop-live/fixture-late-exit）。
+不放宽断言或超时，不继续空转；#31 整体验收仍阻塞，尚未启动多源比较 Draft。
+日志 `/tmp/ipd-pr31-fix-20261106/resume-combo-go.log`、`resume-combo-go-retry.log`、
+`resume-combo-node.log`、`resume-combo-race.log`；反例通过 `resume-r2-fixed.log`。
+下一步须先在已有 #23/#27 runner 范围定位此生命周期就绪问题，独立复核后再恢复组合验收。
