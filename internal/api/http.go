@@ -59,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/me", s.me)
 	mux.HandleFunc("GET /v1/ip/{ip}", s.ip)
 	mux.HandleFunc("GET /v1/ip/{ip}/risk", s.risk)
+	mux.HandleFunc("GET /v1/ip/{ip}/compare", s.compare)
 	mux.HandleFunc("GET /v1/ip/{ip}/history", s.history)
 	mux.HandleFunc("GET /v1/asn/{asn}", s.asn)
 	mux.HandleFunc("GET /v1/prefix/{cidr...}", s.prefix)
@@ -221,6 +222,15 @@ func (s *Server) risk(w http.ResponseWriter, r *http.Request) {
 	rep, err := s.Svc.Risk(r.Context(), ip, live)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
+		return
+	}
+	s.write(w, r, 200, rep)
+}
+
+func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
+	rep, err := s.Svc.Compare(r.Context(), stripSuffix(r.PathValue("ip")), r.URL.Query().Get("live") == "1")
+	if err != nil {
+		http.Error(w, "public IP required", 400)
 		return
 	}
 	s.write(w, r, 200, rep)
