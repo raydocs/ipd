@@ -172,3 +172,15 @@ Node 通过，但 nodes race 再次就绪超时（cancel-live/stop-live/fixture-
 日志 `/tmp/ipd-pr31-fix-20261106/resume-combo-go.log`、`resume-combo-go-retry.log`、
 `resume-combo-node.log`、`resume-combo-race.log`；反例通过 `resume-r2-fixed.log`。
 下一步须先在已有 #23/#27 runner 范围定位此生命周期就绪问题，独立复核后再恢复组合验收。
+
+## #31 有界诊断完成并验收（2026-11-08）
+
+验收 Draft #31 `55ba82b`，不合并。四项 P2 和完整 R2 反例、分支 Go/Node/race 通过；
+之前最终组合 Go/Node 已通过，nodes race 的历史就绪超时另作有界诊断：
+main（nodes 树无改）、#23 `8331260`、#25 `676aabf`、#26 `b81228e`、#27 `f698099`
+串行各一次完整 nodes race 均通过；组合 nodes 全文件哈希与 #27 相同，组合 nodes race 再验通过。
+没有放宽350ms测试预算或削弱断言。测试使用helper而非真实sing-box；本机负载约7。
+此前各PR CI成功，但Ubuntu工作流不含race，不能证明Darwin race稳定。
+结论限于：未复现历史失败、无#31 runner改动，证据支持无关的负载敏感抖动；唯一根因未证实。
+日志 `/tmp/ipd-runner-diagnostic-20261108/`，原失败继续保留，不宣称修好了runner缺陷。
+真实公网挑战页/账号/核心未验证，CF Bot Score保持null/unknown。下一独立Draft：可选key多源对比。
