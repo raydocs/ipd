@@ -22,6 +22,7 @@ const MaxRows = 10000
 
 var classes = []string{"residential_fixed", "residential_mobile", "isp_static", "business", "hosting", "cdn_anycast"}
 var featureNames = strings.Fields("cloud_hit as_cdn anycast tor as_mobile announcer_hosting upstream_hosting rtt_colo rdns_missing as_hosting as_cable as_dsl as_isp keyword_broadband rdns_dynamic as_business keyword_idc geo_disagree vpn eyeball")
+var schemaKey = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 var identifier = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$`)
 
 type Provenance struct {
@@ -96,7 +97,7 @@ func uniqueKeys(d *json.Decoder, depth int) error {
 				return err
 			}
 			key, ok := k.(string)
-			if !ok || key != strings.ToLower(key) || seen[key] {
+			if !ok || !schemaKey.MatchString(key) || seen[key] {
 				return fmt.Errorf("duplicate or invalid JSON key %v", k)
 			}
 			seen[key] = true

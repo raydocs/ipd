@@ -200,3 +200,27 @@ func TestStrictLoad(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadRejectsUnicodeSchemaAliases(t *testing.T) {
+	raw, err := os.ReadFile("testdata/synthetic-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, old, replacement string }{
+		{"literal_split", `"split":"test"`, `"ſplit":"test"`},
+		{"escaped_split", `"split":"test"`, `"\u017fplit":"test"`},
+		{"duplicate_split", `"split":"test"`, `"split":"train","ſplit":"test"`},
+		{"duplicate_features", `"features":{"cloud_hit":1,"vpn":1}`, `"features":{"cloud_hit":1,"vpn":1},"feature\u017f":{"cloud_hit":0,"as_cdn":1}`},
+		{"duplicate_rows", `"rows": [`, `"rows":[],"rowſ":[`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutated := strings.Replace(string(raw), tc.old, tc.replacement, 1)
+			if mutated == string(raw) {
+				t.Fatal("fixture not changed")
+			}
+			if _, err := Load(strings.NewReader(mutated)); err == nil {
+				t.Fatal("Unicode schema alias accepted")
+			}
+		})
+	}
+}

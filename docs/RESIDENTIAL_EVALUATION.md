@@ -162,3 +162,11 @@ with audited evidence; do not fill in synthetic results as public results.
 - Limitations: `<representativeness, label noise, time drift, unsupported classes,
   synthetic/mixed rows, feature-only scope, no calibrated confidence claim>`
 - Independent review and publication approval: **PENDING** / `<review evidence>`
+
+### 输入键完整性修正
+
+独立审查发现 Go 的 Unicode 字段折叠会把长 s（ſ）视为 ASCII s。
+Load 的 token 扫描现在只接受 ASCII 小写 schema 键（字母起始、随后字母/数字/下划线），
+再执行精确重复/未知字段检查；值中的正常 Unicode 不受影响。
+新增 literal/escaped 别名、重复 split/features/rows 回归在旧16341f4实际失败，修正后通过；
+真实CLI对合成unicode-features反例返回非零且不产出成功报告。日志见 /tmp/ipd-batch-root-checks/pr34-*。
