@@ -88,7 +88,9 @@ func normalizeComparison(row Comparison, raw map[string]any, ip netip.Addr) Comp
 		row.ScoreMeaning = "IPQS fraud propensity (0-100); not abuse-report confidence"
 	case "abuseipdb":
 		data, _ = raw["data"].(map[string]any)
-		if data == nil || data["ipAddress"] != ip.String() {
+		returnedIP, _ := data["ipAddress"].(string)
+		parsedIP, parseErr := netip.ParseAddr(returnedIP)
+		if data == nil || parseErr != nil || parsedIP.Zone() != "" || parsedIP.Unmap() != ip.Unmap() {
 			return fail()
 		}
 		scoreKey = "abuseConfidenceScore"

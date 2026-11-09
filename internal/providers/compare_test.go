@@ -159,3 +159,12 @@ func TestComparisonDisagreementNotVotes(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewEquivalentIPv6Identity(t *testing.T) {
+	ip := netip.MustParseAddr("2606:4700:4700::1111")
+	raw := map[string]any{"data": map[string]any{"ipAddress": "2606:4700:4700:0000:0000:0000:0000:1111", "abuseConfidenceScore": float64(0)}}
+	r := normalizeComparison(Comparison{ID: "abuseipdb", Fields: map[string]any{}}, raw, ip)
+	if r.Status != "ok" {
+		t.Fatal("same IPv6 rejected solely due to equivalent expanded representation")
+	}
+}

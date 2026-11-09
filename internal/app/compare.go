@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/netip"
+	"net/url"
 
 	"ipd/internal/privacy"
 	"ipd/internal/providers"
@@ -12,7 +14,8 @@ import (
 // Compare is separate from Risk: it neither feeds purity nor records history.
 func (s *Service) Compare(ctx context.Context, ip string, live bool) (Report, error) {
 	addr, err := netip.ParseAddr(ip)
-	if err != nil || !privacy.IsPublic(addr) {
+	addr = addr.Unmap()
+	if err != nil || addr.Zone() != "" || !privacy.IsPublic(addr) {
 		return Report{}, fmt.Errorf("public IP required")
 	}
 	addr = addr.Unmap()
@@ -21,11 +24,23 @@ func (s *Service) Compare(ctx context.Context, ip string, live bool) (Report, er
 	if s.Cfg != nil {
 		keys = s.Cfg.ProviderKeys
 	}
-	rows := providers.CompareOnline(ctx, addr, keys, live, offline, nil)
-	p := s.Look.Lookup(addr)
+	client := s.comparisonClient
+	var proxy func(*http.Request) (*url.URL, error) = http.ProxyFromEnvironment
+	if s.Cfg != nil && s.Cfg.Proxy != "" {
+		u, parseErr := url.Parse(s.Cfg.Proxy)
+		if parseErr != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "socks5" && u.Scheme != "socks5h") {
+			return Report{}, fmt.Errorf("invalid comparison proxy configuration")
+		}
+		proxy = http.ProxyURL(u)
+	}
+	if client == nil {
+		client = &http.Client{Transport: &http.Transport{Proxy: proxy, DisableCompression: true}}
+	}
+	rows := providers.CompareOnline(ctx, addr, keys, live, offline, client)
+	p, metadata := s.Look.LookupWithSources(addr, s.now())
 	for _, id := range []string{"maxmind_geolite", "ipinfo_lite"} {
 		row := providers.Comparison{ID: id, Status: "unknown", Skipped: "no_source_observation", Scope: "local snapshot country/ASN only", Confidence: "unknown", Fields: map[string]any{}}
-		for _, m := range s.Look.Sources(s.now()) {
+		for _, m := range metadata {
 			if m.ID != id {
 				continue
 			}

@@ -275,6 +275,11 @@ func (e *Engine) prefixAtLocked() time.Time {
 func (e *Engine) Sources(now time.Time) []SourceMeta {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	return e.sourcesLocked(now)
+}
+
+// sourcesLocked requires e.mu to be held for reading.
+func (e *Engine) sourcesLocked(now time.Time) []SourceMeta {
 	out := make([]SourceMeta, len(e.meta))
 	copy(out, e.meta)
 	for i := range out {
@@ -312,6 +317,27 @@ func cadence(freq string) time.Duration {
 
 // Lookup merges every source's longest prefix for ip.
 func (e *Engine) Lookup(ip netip.Addr) Profile {
+	// Reserved addresses do not consult engine state.
+	if !privacy.IsPublic(ip) {
+		return e.lookupLocked(ip)
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.lookupLocked(ip)
+}
+
+// LookupWithSources returns the complete lookup and source metadata from one
+// engine generation, with staleness evaluated at now. The read lock covers
+// merging and MMDB reads as well as copying metadata and mmap-backed records.
+func (e *Engine) LookupWithSources(ip netip.Addr, now time.Time) (Profile, []SourceMeta) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.lookupLocked(ip), e.sourcesLocked(now)
+}
+
+// lookupLocked requires e.mu to be held for reading for public addresses.
+// Do not call locking public methods here: a pending writer forbids recursive RLock.
+func (e *Engine) lookupLocked(ip netip.Addr) Profile {
 	p := Profile{IP: ip.String(), AnnouncedBy: []int{}, Flags: []string{}}
 	if !privacy.IsPublic(ip) {
 		p.Reserved = true
@@ -319,8 +345,6 @@ func (e *Engine) Lookup(ip netip.Addr) Profile {
 		p.ASType = "reserved"
 		return p
 	}
-	e.mu.RLock()
-	defer e.mu.RUnlock()
 	var hits []Hit
 	for id, tbl := range e.tables {
 		if e.mapped[id] != nil {

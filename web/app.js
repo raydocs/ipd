@@ -8,7 +8,7 @@
   var localtext = document.getElementById("localtext");
   var lastEgress = [];
 
-  function show(rep) {
+  function show(rep, callerEgress) {
     out.hidden = false;
     var v = rep.verdict || "abstain";
     verdict.textContent = "结论：" + v;
@@ -30,7 +30,7 @@
       body.appendChild(tr);
     });
     var ip = rep.data && (rep.data.ip || (rep.data.ipv4));
-    if (ip) lastEgress = [ip];
+    if (callerEgress && ip) lastEgress = [ip];
   }
 
   form.addEventListener("submit", function (ev) {
@@ -39,7 +39,7 @@
     var url = ip ? "/v1/ip/" + encodeURIComponent(ip) + "/risk?live=0" : "/v1/me";
     fetch(url, { headers: { Accept: "application/json" } })
       .then(function (r) { return r.json(); })
-      .then(show)
+      .then(function (rep) { show(rep, !ip); })
       .catch(function (err) {
         out.hidden = false;
         verdict.textContent = "查询失败";
