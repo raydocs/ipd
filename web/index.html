@@ -36,6 +36,25 @@
   <section class="card" id="local" hidden>
     <p id="localtext"></p>
   </section>
+  <section class="card" aria-labelledby="ai-title">
+    <h2 id="ai-title">AI 环境体检 · 本地增量</h2>
+    <p>仅点击后采集时区、语言、三个固定字体的可用性近似值及 WebView/automation 提示。只在当前页面内存查看，不上传、不持久化、不新增请求。提示不是唯一指纹或账号封禁原因。</p>
+    <button type="button" id="ai-collect">本地查看 / 重新采集</button>
+    <p>可选：粘贴已有 <code>ipd ai --json</code> 报告。不要粘贴账号、令牌等秘密。导入的探测进程证据不代表当前浏览器路径；本页不会访问服务来补测。</p>
+    <label for="ai-report">已有 AI 报告（仅本地解析）</label>
+    <textarea id="ai-report" rows="5" spellcheck="false" autocomplete="off"></textarea>
+    <button type="button" class="secondary" id="ai-import">本地查看服务证据</button>
+    <p id="ai-status" role="status"></p>
+    <div id="ai-results" hidden>
+      <h3>本地信号（不是服务出口证据）</h3>
+      <pre id="ai-signals"></pre>
+      <h3>按出口 IP 分组的服务 trace 证据</h3>
+      <p>来源和时间逐条保留；unknown 表示未知。trace 不是 AI 应用请求证据；无 trace 时不能知道 Claude/OpenAI 实际看见的 IP。同 IP 也不证明同路径或 safe；账号限制不能归因于 IP。</p>
+      <pre id="ai-groups"></pre>
+      <h3>先修顺序（核验建议，不是安全评分）</h3>
+      <ol id="ai-fixes"></ol>
+    </div>
+  </section>
   <footer>
     <p>方法公开在 <a href="/v1/methodology">/v1/methodology</a>，数据源在 <a href="/v1/sources">/v1/sources</a>。WebRTC 候选地址只在这台浏览器里比较，上传的只有「是否泄露」和候选条数。</p>
     <p>给 agent：<code>curl</code> 本站第一行就是结论；MCP 在 <code>/mcp</code>。</p>

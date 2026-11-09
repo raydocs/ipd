@@ -43,9 +43,123 @@ function isNonPublic(ip) {
   return false;
 }
 
-if (typeof module !== "undefined" && module.exports) {
-  module.exports = { judgeLeak: judgeLeak };
+// Explicit-click collection only. No network, storage, canvas, or font enumeration.
+function attempt(fn) {
+  try { var value = fn(); return value === undefined ? null : value; } catch (_) { return null; }
 }
-if (typeof window !== "undefined") {
-  window.ipdJudge = { judgeLeak: judgeLeak };
+function collectLocalSignals(env) {
+  env = env || {};
+  var nav = attempt(function () { return env.navigator; });
+  return {
+    source: 'browser-local; not service egress evidence',
+    collected_at: attempt(function () { return new env.Date().toISOString(); }),
+    timezone: attempt(function () { return env.Intl.DateTimeFormat().resolvedOptions().timeZone || null; }),
+    offset_minutes: attempt(function () { return -new env.Date().getTimezoneOffset(); }),
+    languages: attempt(function () {
+      var values = nav.languages;
+      return Array.isArray(values) && values.length ? values.filter(function (s) { return typeof s === 'string'; }).slice(0, 10) : null;
+    }),
+    fonts: ['Arial', 'Times New Roman', 'Courier New'].map(function (name) {
+      return { name: name, available: attempt(function () { return localFontAvailable(env.document, name); }) };
+    }),
+    webview: attempt(function () {
+      if (typeof nav.userAgent !== 'string' || !nav.userAgent) return null;
+      // Only positive UA hints; absence cannot rule out an embedded browser.
+      return /\bwv\b|WebView/i.test(nav.userAgent) ? true : null;
+    }),
+    automation: attempt(function () { return typeof nav.webdriver === 'boolean' ? nav.webdriver : null; })
+  };
 }
+function localFontAvailable(doc, name) {
+  if (!doc || !doc.body || !doc.createElement) return null;
+  var span = doc.createElement('span');
+  span.textContent = 'mmmmmmmmmmWWWWiiii';
+  span.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;font-size:72px;font-weight:normal;font-style:normal';
+  try {
+    doc.body.appendChild(span);
+    var widths = ['monospace', 'serif'].map(function (fallback) {
+      span.style.fontFamily = fallback;
+      var base = span.getBoundingClientRect().width;
+      span.style.fontFamily = '"' + name + '",' + fallback;
+      var width = span.getBoundingClientRect().width;
+      return base > 0 && width > 0 ? width !== base : null;
+    });
+    return widths.indexOf(null) >= 0 ? null : widths.some(Boolean);
+  } finally { span.remove(); }
+}
+
+// Strict literals only; never extract an apparent address from arbitrary evidence text.
+function evidenceIP(raw) {
+  if (typeof raw !== 'string') return '';
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(raw)) {
+    var parts = raw.split('.');
+    return parts.every(function (p) { return /^(0|[1-9][0-9]*)$/.test(p) && Number(p) <= 255; }) ? parts.map(Number).join('.') : '';
+  }
+  if (!/^[0-9a-f:.]+$/i.test(raw) || raw.indexOf(':') < 0) return '';
+  var canonical = attempt(function () { return new URL('http:' + '//[' + raw + ']/').hostname.slice(1, -1); }) || '';
+  var mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(canonical);
+  if (mapped) { var n = parseInt(mapped[1], 16), m = parseInt(mapped[2], 16); return [n >> 8, n & 255, m >> 8, m & 255].join('.'); }
+  return canonical;
+}
+function validateAIReport(report) {
+  var pending = [[report, 0]], count = 0;
+  while (pending.length) {
+    var item = pending.pop(), value = item[0];
+    if (++count > 10000 || item[1] > 12) throw new Error('Report structure limit');
+    if (typeof value === 'string' && value.length > 10000) throw new Error('Report text limit');
+    if (value && typeof value === 'object') Object.keys(value).forEach(function (key) { pending.push([value[key], item[1] + 1]); });
+  }
+}
+function aiAvailability(status, availability) {
+  var expected = { yes: 'available', no: 'unavailable', partial: 'limited', originals_only: 'limited', app_only: 'limited', web_only: 'limited', idc: 'limited' };
+  return Object.prototype.hasOwnProperty.call(expected, status) && expected[status] === availability ? availability : 'unknown';
+}
+function aiText(value) { return typeof value === 'string' && value.trim() ? value : 'unknown'; }
+function buildAIReview(report, local) {
+  validateAIReport(report);
+  var data = report && report.data;
+  if (!data || data.schema_version !== 'ai-diagnosis-v1') data = {};
+  var traces = Array.isArray(data.traces) ? data.traces : [];
+  var groups = {};
+  var unknown = [];
+  traces.forEach(function (t) {
+    if (!t || typeof t !== 'object') return;
+    var ip = t.status === 'observed' && aiText(t.evidence) !== 'unknown' ? evidenceIP(t.ip) : '';
+    var row = {
+      source: aiText(t.url),
+      scope: 'imported probe-process trace; not browser path or account evidence',
+      observed_at: null, // v1 traces have no measurement timestamp; cached_at is not one.
+      status: ['observed', 'error', 'abstain', 'unknown'].indexOf(t.status) >= 0 ? t.status : 'unknown',
+      evidence: aiText(t.evidence)
+    };
+    if (ip && row.source !== 'unknown') {
+      if (!groups[ip]) groups[ip] = { ip: ip, observations: [] };
+      groups[ip].observations.push(row);
+    } else unknown.push(row);
+  });
+  function compare(a, b) { a = JSON.stringify(a); b = JSON.stringify(b); return a < b ? -1 : a > b ? 1 : 0; }
+  var list = Object.keys(groups).sort().map(function (ip) {
+    groups[ip].observations.sort(compare);
+    return groups[ip];
+  });
+  unknown.sort(compare);
+  var services = (Array.isArray(data.per_service) ? data.per_service : []).filter(function (s) { return s && typeof s === 'object'; }).map(function (s) {
+    return { service: aiText(s.service), status: ['yes', 'no', 'partial', 'originals_only', 'app_only', 'web_only', 'idc', 'error', 'abstain'].indexOf(s.status) >= 0 ? s.status : 'unknown', evidence: aiText(s.evidence), availability: ['available', 'unavailable', 'limited'].indexOf(s.availability) >= 0 && aiText(s.evidence) !== 'unknown' && ['yes', 'no', 'partial', 'originals_only', 'app_only', 'web_only', 'idc'].indexOf(s.status) >= 0 ? aiAvailability(s.status, s.availability) : 'unknown', observed_at: null };
+  }).sort(compare);
+  var fixes = [];
+  function fix(priority, issue, how) { fixes.push({ priority: priority, issue: issue, how: how }); }
+  var sources = new Set();
+  list.forEach(function (g) { g.observations.forEach(function (o) { sources.add(o.source); }); });
+  // The v1 contract has five trace targets. Coverage/time gaps remain explicit.
+  if (['claude.ai', 'chatgpt.com', 'api.anthropic.com', 'statsigapi.net', 'browser.sentry.io'].some(function (host) { return !sources.has('https:' + '//' + host + '/cdn-cgi/trace'); }) || unknown.length || ['claude', 'chatgpt', 'gemini', 'grok', 'copilot', 'meta_ai', 'perplexity'].some(function (id) { return !services.some(function (s) { return s.service === id && s.availability !== 'unknown'; }); })) fix(10, 'evidence_missing', '先补测服务与出口来源；测量时间未知，需在预期代理路径复测。不要把缺测当作可用。');
+  var v4 = list.filter(function (g) { return g.ip.indexOf(':') < 0; });
+  var v6 = list.filter(function (g) { return g.ip.indexOf(':') >= 0; });
+  if (v4.length > 1 || v6.length > 1) fix(20, 'egress_mismatch', '同地址族观察到不同出口；先核验分流或轮换并复测，不推断账号封禁。IPv4/IPv6 不同本身正常。');
+  if (!local) fix(30, 'local_missing', '点击本地查看后再核对时区和语言；本地信息不是服务出口证据。');
+  fix(40, 'locale_review', '时区/语言与预期使用环境需人工核验，不按国家机械匹配；一致也不代表安全或可用。');
+  if (local && (local.automation === true || local.webview === true)) fix(50, 'browser_hint', 'WebView/automation 仅为可能受误报影响的提示；不作为唯一指纹、封禁原因或账号限制归因。');
+  return { groups: list, unknown: unknown, services: services, fixes: fixes };
+}
+var ipdJudgeAPI = { judgeLeak: judgeLeak, collectLocalSignals: collectLocalSignals, buildAIReview: buildAIReview };
+if (typeof module !== 'undefined' && module.exports) module.exports = ipdJudgeAPI;
+if (typeof window !== 'undefined') window.ipdJudge = ipdJudgeAPI;

@@ -84,6 +84,43 @@
     });
   });
 
+  // Separate in-memory state: never included in query or WebRTC uploads.
+  var aiSignals = null;
+  var aiReport = null;
+  function showAI(candidate) {
+    var review = window.ipdJudge.buildAIReview(candidate === undefined ? aiReport : candidate, aiSignals);
+    document.getElementById("ai-results").hidden = false;
+    document.getElementById("ai-signals").textContent = aiSignals ? JSON.stringify(aiSignals, null, 2) : "unknown（尚未点击采集）";
+    document.getElementById("ai-groups").textContent = JSON.stringify({
+      groups: review.groups, unknown: review.unknown, services: review.services
+    }, null, 2);
+    var fixes = document.getElementById("ai-fixes");
+    fixes.textContent = "";
+    review.fixes.forEach(function (fix) {
+      var item = document.createElement("li");
+      item.textContent = fix.issue + "：" + fix.how;
+      fixes.appendChild(item);
+    });
+  }
+  document.getElementById("ai-collect").addEventListener("click", function () {
+    aiSignals = window.ipdJudge.collectLocalSignals(window);
+    showAI();
+    document.getElementById("ai-status").textContent = "已重新采集，仅本地内存；null 表示未知。字体结果为布局近似，false/缺少提示不证明无字体、无自动化。";
+  });
+  document.getElementById("ai-import").addEventListener("click", function () {
+    try {
+      var text = document.getElementById("ai-report").value;
+      if (text.length > 200000) throw new Error("报告过大");
+      var rep = JSON.parse(text);
+      if (!rep || !rep.data || rep.data.schema_version !== "ai-diagnosis-v1") throw new Error("需要 ai-diagnosis-v1 报告");
+      showAI(rep);
+      aiReport = rep;
+      document.getElementById("ai-status").textContent = "已本地解析，未上传；原报告中的 cached_at 不冒充逐项测量时间。";
+    } catch (_) {
+      document.getElementById("ai-status").textContent = "无法解析：请输入有效且不超过 200000 字符的 ai-diagnosis-v1 JSON 报告；仍显示上次成功解析的证据。";
+    }
+  });
+
   function gather() {
     return new Promise(function (resolve, reject) {
       if (!window.RTCPeerConnection) {
