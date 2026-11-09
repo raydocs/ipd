@@ -4,12 +4,16 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestLiveGlobalpingPingAndTrace(t *testing.T) {
+	if os.Getenv("IPD_LIVE_GLOBALPING") != "1" {
+		t.Skip("set IPD_LIVE_GLOBALPING=1 to opt in to live measurements")
+	}
 	if !reachable("api.globalping.io:443", 3*time.Second) {
 		t.Skip("globalping api unreachable")
 	}

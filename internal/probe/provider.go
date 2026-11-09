@@ -47,6 +47,9 @@ type Sample struct {
 	DNSAddrs []string
 	SNI      string
 	Error    string
+
+	AnchorHealth AnchorHistory
+
 	// DestinationReached is nil when completion is unknown, not an implicit success.
 	DestinationReached *bool
 	TraceDestination   string

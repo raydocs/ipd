@@ -528,6 +528,8 @@ func (s *Service) GFW(ctx context.Context, target string, ports []int) (Report, 
 		obs = append(obs, gfw.Obs{
 			Network: sm.Network, ASN: sm.ASN, City: sm.City, Healthy: sm.Healthy,
 			ICMP: sm.ICMP, Loss: sm.Loss, TCP: tcp, DNSAddrs: sm.DNSAddrs, SNI: sm.SNI,
+
+			AnchorHealth: sm.AnchorHealth,
 		})
 	}
 	judged := gfw.Judge(obs, ports, poisonSet())

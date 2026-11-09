@@ -3,7 +3,12 @@
 // that a vantage provider already collected.
 package gfw
 
-import "strconv"
+import (
+	"sort"
+	"strconv"
+
+	"ipd/internal/probe"
+)
 
 // Verdicts, in the priority used by Judge.
 const (
@@ -35,6 +40,8 @@ type Obs struct {
 	TCP      map[int]string `json:"tcp"`  // port -> ok, timeout, reset
 	DNSAddrs []string       `json:"dns_addrs"`
 	SNI      string         `json:"sni"` // ok, reset, timeout, or empty
+
+	AnchorHealth probe.AnchorHistory `json:"anchor_health"`
 }
 
 // Result is the gfw_check payload.
@@ -53,6 +60,8 @@ type ProbeView struct {
 	City string            `json:"city"`
 	ICMP string            `json:"icmp"`
 	TCP  map[string]string `json:"tcp"`
+
+	AnchorHealth probe.AnchorHistory `json:"anchor_health"`
 }
 
 // Judge applies the priority order from the plan.
@@ -71,6 +80,11 @@ func Judge(obs []Obs, ports []int, poison map[string]struct{}) Result {
 		if o.Network == "ct" || o.Network == "cu" || o.Network == "cm" {
 			cn[o.Network] = append(cn[o.Network], o)
 		}
+	}
+	// Prioritize evidence presentation only. Never multiply votes or confidence:
+	// every original count, carrier diversity and abstention gate below is intact.
+	for _, group := range cn {
+		prioritize(group)
 	}
 	res := Result{
 		PerCarrier: map[string]string{"ct": "no_data", "cu": "no_data", "cm": "no_data"},
@@ -308,12 +322,24 @@ func congested(cn map[string][]Obs) bool {
 	return false
 }
 
+// Unknown history has neutral display priority, explicitly not a weight claim.
+func prioritize(obs []Obs) {
+	priority := func(o Obs) float64 {
+		h := o.AnchorHealth
+		if h.Known && h.Weight != nil && *h.Weight >= 0 && *h.Weight <= 1 {
+			return *h.Weight
+		}
+		return 0.5
+	}
+	sort.SliceStable(obs, func(i, j int) bool { return priority(obs[i]) > priority(obs[j]) })
+}
+
 func view(o Obs) ProbeView {
 	tcp := map[string]string{}
 	for p, st := range o.TCP {
 		tcp[strconv.Itoa(p)] = st
 	}
-	return ProbeView{ASN: o.ASN, City: o.City, ICMP: o.ICMP, TCP: tcp}
+	return ProbeView{AnchorHealth: o.AnchorHealth, ASN: o.ASN, City: o.City, ICMP: o.ICMP, TCP: tcp}
 }
 
 func views(obs []Obs) []ProbeView {
