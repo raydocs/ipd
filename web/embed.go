@@ -5,5 +5,5 @@ import "embed"
 
 // FS holds the page and the local WebRTC judge.
 //
-//go:embed index.html style.css app.js judge.js favicon.svg
+//go:embed index.html style.css app.js judge.js report.js favicon.svg
 var FS embed.FS

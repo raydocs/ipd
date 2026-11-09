@@ -8,24 +8,68 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 </head>
 <body>
+<a class="skip" href="#workspace">跳至查询</a>
+<header class="sitehead"><a href="/" class="brand">ipd<span> / evidence desk</span></a><nav aria-label="页面导航"><a href="#workspace">地址报告</a><a href="#ai-title">AI 环境</a><a href="/v1/sources">数据源</a><a href="/v1/methodology">方法</a></nav></header>
 <main>
-  <h1>ipd</h1>
-  <p class="lede">先看结论：这个地址像不像真住宅、是不是广播、能不能给 Claude 和 ChatGPT 用、从中国看是被墙还是送中。证据跟在后面。低置信度会写「无法判定」。</p>
+  <section class="intro"><p class="eyebrow">NETWORK INTELLIGENCE · AGENT FIRST</p><h1>先看证据，<br>再做判断。</h1>
+  <p class="lede">同一个 IP，不同服务可能给出不同答案。把来源、时间和「无法判定」留在报告里，不把“没发现”写成“安全”。</p><p class="privacy-note"><span class="status-dot"></span>默认不调用付费来源 · 本地信号按需采集 · 不承诺账号安全</p></section>
+  <section class="workspace card" id="workspace" aria-labelledby="query-title"><div class="section-heading"><div><p class="eyebrow">01 / ADDRESS</p><h2 id="query-title">查看地址证据</h2></div><span class="tag">OFFLINE-FIRST</span></div>
   <form id="q">
+    <label class="sr-only" for="ip">公网 IP，留空查看本机出口</label>
     <input id="ip" name="ip" placeholder="留空则看本机出口，或填一个公网 IP" autocomplete="off">
-    <button type="submit">查询</button>
+    <button type="submit">查看质量报告 <span aria-hidden="true">↗</span></button>
+    <button type="button" class="secondary" id="lookup">位置与归属</button>
   </form>
-  <section class="card" id="out" hidden>
-    <p class="verdict" id="verdict"></p>
-    <p id="summary"></p>
-    <pre id="detail"></pre>
+  <details class="compare-options"><summary>可选：并列比较不同数据源</summary>
+  <form id="compare">
+    <label><input id="compare-live" type="checkbox"> 同意将输入的公网 IP 发送给已配置的 IPQS / AbuseIPDB / ipapi.is（可选；离线模式不发送）</label>
+    <button type="submit" class="secondary">比较来源证据</button>
+    <p>复用上方 IP 输入；缺源不等于否定，分数不可互换；无黑名单不证明安全。其余在线适配仍待接入。</p>
+  </form></details>
   </section>
-  <div class="row">
+  <section class="card report" id="out" hidden>
+    <p class="eyebrow">02 / REPORT · 未知不会当作通过</p><p class="tool-note">缺测不等于否定，观察完成也不证明安全。</p>
+    <p class="verdict" id="verdict"></p>
+    <p id="summary" role="status"></p>
+    <div id="report-facts" class="facts-grid"></div>
+    <section id="location-panel" class="location-panel" hidden aria-labelledby="map-title"><h3 id="map-title">位置证据</h3><p id="map-note">没有可核验坐标。不会用 (0,0) 代替未知。</p>
+    <svg id="geo-map" viewBox="0 0 600 260" role="img" aria-labelledby="map-svg-title" hidden><title id="map-svg-title">本地等距地理坐标示意，非精确定位</title>
+    <rect width="600" height="260" fill="#eef4f6"/><path d="M0 65H600M0 130H600M0 195H600M100 0V260M200 0V260M300 0V260M400 0V260M500 0V260" stroke="#cedbe0" fill="none"/>
+    <text x="6" y="15" font-size="11" fill="#526c79">90°N</text><text x="6" y="125" font-size="11" fill="#526c79">0°</text><text x="6" y="252" font-size="11" fill="#526c79">90°S</text>
+    <circle id="geo-marker" cx="300" cy="130" r="6" fill="#126655" stroke="white" stroke-width="3"/></svg></section>
+    <div id="share-controls" class="share-controls" hidden><label><input type="checkbox" id="share-opt-in"> 我已核对报告，仅在本机生成隐藏 IP 的摘要</label><button type="button" class="secondary" id="share-download" disabled>下载脱敏 SVG</button><p>默认关闭；不上传、不生成公开链接，不含 IP、位置、原始错误或账号信息。</p></div>
+    <p class="tool-note" id="comparison-scroll-note" hidden>比较表可横向滚动；不同源分数含义不能互换。</p><div id="comparison-wrap" class="table-scroll" hidden role="region" aria-label="数据源比较（可横向滚动）" tabindex="0"><table id="comparison-results" hidden>
+      <thead><tr><th>来源</th><th>状态 / 原因</th><th>字段</th><th>原始语义分数</th><th>时间 / 范围 / 许可 / 置信度</th></tr></thead>
+      <tbody id="comparison-rows"></tbody>
+    </table></div>
+    <details class="raw"><summary>展开原始 JSON · 可能含 IP / 未脱敏字段</summary><pre id="detail"></pre></details>
+  </section>
+  <section class="local-tools" aria-labelledby="local-tools-title"><h2 id="local-tools-title">本机线索</h2><p class="tool-note">按需检查，仅是核验线索，不是服务出口或封禁归因。</p><div class="row">
     <button type="button" class="secondary" id="webrtc">在本机判断 WebRTC</button>
     <button type="button" class="secondary" id="tz">核对时区</button>
   </div>
-  <section class="card" id="local" hidden>
+  </section>
+  <section class="card" id="local" hidden><h2>本机检查结果</h2>
     <p id="localtext"></p>
+  </section>
+  <section class="card ai-panel" aria-labelledby="ai-title"><p class="eyebrow">03 / BROWSER · LOCAL ONLY</p>
+    <h2 id="ai-title">AI 环境体检 · 本地增量</h2>
+    <p>仅点击后采集时区、语言、三个固定字体的可用性近似值及 WebView/automation 提示。只在当前页面内存查看，不上传、不持久化、不新增请求。提示不是唯一指纹或账号封禁原因。</p>
+    <button type="button" class="secondary" id="ai-collect">本地查看 / 重新采集</button>
+    <p>可选：粘贴已有 <code>ipd ai --json</code> 报告。不要粘贴账号、令牌等秘密。导入的探测进程证据不代表当前浏览器路径；本页不会访问服务来补测。</p>
+    <label for="ai-report">已有 AI 报告（仅本地解析）</label>
+    <textarea id="ai-report" rows="5" spellcheck="false" autocomplete="off"></textarea>
+    <button type="button" class="secondary" id="ai-import">本地查看服务证据</button>
+    <p id="ai-status" role="status"></p>
+    <div id="ai-results" hidden>
+      <h3>本地信号（不是服务出口证据）</h3>
+      <pre id="ai-signals"></pre>
+      <h3>按出口 IP 分组的服务 trace 证据</h3>
+      <p>来源和时间逐条保留；unknown 表示未知。trace 不是 AI 应用请求证据；无 trace 时不能知道 Claude/OpenAI 实际看见的 IP。同 IP 也不证明同路径或 safe；账号限制不能归因于 IP。</p>
+      <pre id="ai-groups"></pre>
+      <h3>先修顺序（核验建议，不是安全评分）</h3>
+      <ol id="ai-fixes"></ol>
+    </div>
   </section>
   <footer>
     <p>方法公开在 <a href="/v1/methodology">/v1/methodology</a>，数据源在 <a href="/v1/sources">/v1/sources</a>。WebRTC 候选地址只在这台浏览器里比较，上传的只有「是否泄露」和候选条数。</p>
@@ -33,6 +77,7 @@
   </footer>
 </main>
 <script src="/static/judge.js"></script>
+<script src="/static/report.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

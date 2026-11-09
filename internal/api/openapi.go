@@ -69,11 +69,19 @@ func reportSchemas() oa {
 		"SharedReport":        reportWithData(objectSchema(oa{"body": oa{"type": "string"}}, "body")),
 		"LabelReport":         reportWithData(objectSchema(oa{"ok": oa{"const": true}}, "ok")),
 		"WebRTCReport":        reportWithData(objectSchema(oa{"leak": oa{"type": "boolean"}, "candidate_count": oa{"type": "integer"}}, "leak", "candidate_count")),
-		"RiskReport":          reportWithData(objectSchema(oa{"native": objectSchema(oa{"verdict": oa{"type": "string", "enum": []string{"native", "broadcast", "abstain"}, "description": "Three-state classification, not a boolean. Missing evidence is abstain."}})})),
-		"PowChallenge":        objectSchema(oa{"challenge": oa{"type": "string"}, "bits": oa{"type": "integer"}}, "challenge", "bits"),
-		"Error":               stringSchema("Plain-text http.Error body, generally ending in a newline; not a JSON error envelope."),
-		"JSONRPCError":        objectSchema(oa{"jsonrpc": oa{"const": "2.0"}, "id": oa{}, "error": objectSchema(oa{"code": oa{"type": "integer"}, "message": oa{"type": "string"}, "data": oa{}}, "code", "message")}, "jsonrpc", "id", "error"),
-		"JSONRPC":             objectSchema(oa{"jsonrpc": oa{"const": "2.0"}, "id": oa{}, "method": oa{"type": "string"}, "params": oa{}, "result": oa{}, "error": oa{}}, "jsonrpc"),
+		"ComparisonRow": objectSchema(oa{
+			"id": oa{"type": "string"}, "status": oa{"type": "string", "enum": []string{"ok", "skipped", "unknown", "error"}},
+			"skipped": oa{"type": "string"}, "error": oa{"type": "string"}, "timestamp": oa{"type": []string{"string", "null"}, "format": "date-time"},
+			"scope": oa{"type": "string"}, "licensing": oa{"type": "string"}, "confidence": oa{"type": "string"},
+			"version": oa{"type": "string"}, "attribution": oa{"type": "string"}, "fields": oa{"type": "object", "description": "Explicit country/ASN/proxy/vpn/tor only; absence is unknown."},
+			"score": oa{"type": "integer", "minimum": 0, "maximum": 100}, "score_meaning": oa{"type": "string", "description": "Provider-specific, never compare or average across sources."},
+		}, "id", "status", "skipped", "error", "timestamp", "scope", "licensing", "confidence", "attribution", "fields"),
+		"ComparisonReport": reportWithData(objectSchema(oa{"ip": oa{"type": "string"}, "rows": arraySchema(schemaRef("ComparisonRow")), "differences": oa{"type": "object", "description": "Only differing explicit comparable observations; no majority verdict."}}, "ip", "rows", "differences")),
+		"RiskReport":       reportWithData(objectSchema(oa{"native": objectSchema(oa{"verdict": oa{"type": "string", "enum": []string{"native", "broadcast", "abstain"}, "description": "Three-state classification, not a boolean. Missing evidence is abstain."}})})),
+		"PowChallenge":     objectSchema(oa{"challenge": oa{"type": "string"}, "bits": oa{"type": "integer"}}, "challenge", "bits"),
+		"Error":            stringSchema("Plain-text http.Error body, generally ending in a newline; not a JSON error envelope."),
+		"JSONRPCError":     objectSchema(oa{"jsonrpc": oa{"const": "2.0"}, "id": oa{}, "error": objectSchema(oa{"code": oa{"type": "integer"}, "message": oa{"type": "string"}, "data": oa{}}, "code", "message")}, "jsonrpc", "id", "error"),
+		"JSONRPC":          objectSchema(oa{"jsonrpc": oa{"const": "2.0"}, "id": oa{}, "method": oa{"type": "string"}, "params": oa{}, "result": oa{}, "error": oa{}}, "jsonrpc"),
 	}
 
 	for name, schema := range payloadSchemas() {
@@ -230,6 +238,7 @@ func paths() map[string]any {
 	reportOp("/v1/me", "get", "Caller egress profile", "Uses configured egress addresses or caller address, not remote execution of all egress tools.", "MeReport", bad, parameter("ip_version", "query", "4 or 6 selects the preferred configured/caller family; 6 falls back when unavailable, other values use default selection.", oa{"type": "string"}, false))
 	reportOp("/v1/sources", "get", "Dataset status and attribution", "Dataset metadata, not active egress tests.", "SourcesReport", nil)
 	reportOp("/v1/ip/{ip}", "get", "Passive IP lookup", "Geo, ASN and source disagreements; private/documentation IPs return a reserved verdict.", "LookupReport", bad)
+	reportOp("/v1/ip/{ip}/compare", "get", "Draft multi-source comparison", "Public IP only; no history, purity changes, or external calls without explicit live=1. Offline overrides live. Seven source rows; only IPQS/AbuseIPDB online normalization currently implemented; other online sources explicitly skipped. Local snapshot evidence is not a live observation.", "ComparisonReport", bad, parameter("live", "query", "Only exactly 1 opts in to sharing the IP with configured supported providers. Missing keys skip even if a vendor supports anonymous access.", oa{"type": "string", "enum": []string{"0", "1"}, "default": "0"}, false))
 	reportOp("/v1/ip/{ip}/risk", "get", "Risk evidence", "Purity, residential class and native/broadcast/abstain evidence; an unknown verdict is not a boolean false.", "RiskReport", bad, parameter("live", "query", "Exactly 0 disables live enrichment; other values allow it unless offline configuration disables it.", oa{"type": "string", "default": "1"}, false))
 	reportOp("/v1/ip/{ip}/history", "get", "Stored change history", "Does not probe the target.", "HistoryReport", bad, parameter("days", "query", "Lookback days; absent, non-integer, <=0 or >365 falls back to 90.", oa{"type": "integer", "default": 90}, false))
 	reportOp("/v1/asn/{asn}", "get", "Autonomous system", "No validation error for an unparseable ASN (treated as 0).", "ASNReport", nil)

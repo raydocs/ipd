@@ -37,20 +37,21 @@ import (
 
 // Service is safe for concurrent use.
 type Service struct {
-	Cfg         *config.Config
-	Look        *lookup.Engine
-	DB          *store.Store
-	Enrich      *providers.Fanout
-	Vantage     probe.Provider
-	Checks      *unlock.Engine
-	Now         func() time.Time
-	Egress      func(ctx context.Context) (v4, v6 string)
-	Tracer      func(ctx context.Context, target string) ([]route.Hop, error)
-	Dial        func(ctx context.Context, network, addr string) (net.Conn, error)
-	DNS         ResolverSource
-	nodeChecker nodes.Checker
-	mu          sync.Mutex
-	fp          map[string]Fingerprint
+	Cfg              *config.Config
+	Look             *lookup.Engine
+	DB               *store.Store
+	Enrich           *providers.Fanout
+	Vantage          probe.Provider
+	Checks           *unlock.Engine
+	Now              func() time.Time
+	Egress           func(ctx context.Context) (v4, v6 string)
+	Tracer           func(ctx context.Context, target string) ([]route.Hop, error)
+	Dial             func(ctx context.Context, network, addr string) (net.Conn, error)
+	DNS              ResolverSource
+	comparisonClient *http.Client
+	nodeChecker      nodes.Checker
+	mu               sync.Mutex
+	fp               map[string]Fingerprint
 }
 
 // ResolverSource is the DNS leak comparative input.
@@ -87,13 +88,14 @@ func New(cfg *config.Config, db *store.Store) *Service {
 		}
 	}
 	s := &Service{
-		Cfg:    cfg,
-		Look:   lookup.New(),
-		DB:     db,
-		Enrich: providers.New(providers.All(cfg.ProviderKeys, cfg.ProviderBase, client), cfg.EnrichTimeout),
-		Checks: &unlock.Engine{Get: unlock.LiveGetter{Client: client}},
-		Now:    time.Now,
-		fp:     map[string]Fingerprint{},
+		Cfg:              cfg,
+		comparisonClient: client,
+		Look:             lookup.New(),
+		DB:               db,
+		Enrich:           providers.New(providers.All(cfg.ProviderKeys, cfg.ProviderBase, client), cfg.EnrichTimeout),
+		Checks:           &unlock.Engine{Get: unlock.LiveGetter{Client: client}},
+		Now:              time.Now,
+		fp:               map[string]Fingerprint{},
 	}
 	// Apply registry so a disabled selection is visible.
 	reg := probe.NewRegistry(cfg.Vantage,
