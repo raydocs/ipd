@@ -8,29 +8,53 @@
   var localtext = document.getElementById("localtext");
   var lastEgress = [];
 
-  function show(rep) {
+  function show(rep, callerEgress) {
     out.hidden = false;
     var v = rep.verdict || "abstain";
     verdict.textContent = "结论：" + v;
     verdict.className = "verdict " + (v === "ok" || v === "safe" || v === "native" || v === "yes" ? "ok" : v === "bad" || v === "blocked" || v === "risky" ? "bad" : "");
     summary.textContent = rep.summary_md || "";
     detail.textContent = JSON.stringify(rep.data || {}, null, 2);
+    var rows = rep.data && rep.data.rows;
+    document.getElementById("comparison-results").hidden = !Array.isArray(rows);
+    var body = document.getElementById("comparison-rows");
+    body.textContent = "";
+    if (Array.isArray(rows)) rows.forEach(function (row) {
+      var tr = document.createElement("tr");
+      [row.id, [row.status, row.skipped, row.error].filter(Boolean).join(" / "),
+        JSON.stringify(row.fields || {}), row.score == null ? "unknown" : row.score + " · " + row.score_meaning,
+        [row.timestamp || "unknown", row.version, row.scope, row.licensing, row.attribution, row.confidence].filter(Boolean).join(" · ")
+      ].forEach(function (value) {
+        var td = document.createElement("td"); td.textContent = value; tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
     var ip = rep.data && (rep.data.ip || (rep.data.ipv4));
-    if (ip) lastEgress = [ip];
+    if (callerEgress && ip) lastEgress = [ip];
   }
 
   form.addEventListener("submit", function (ev) {
     ev.preventDefault();
     var ip = document.getElementById("ip").value.trim();
-    var url = ip ? "/v1/ip/" + encodeURIComponent(ip) + "/risk" : "/v1/me";
+    var url = ip ? "/v1/ip/" + encodeURIComponent(ip) + "/risk?live=0" : "/v1/me";
     fetch(url, { headers: { Accept: "application/json" } })
       .then(function (r) { return r.json(); })
-      .then(show)
+      .then(function (rep) { show(rep, !ip); })
       .catch(function (err) {
         out.hidden = false;
         verdict.textContent = "查询失败";
         summary.textContent = String(err);
       });
+  });
+
+  document.getElementById("compare").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var ip = document.getElementById("ip").value.trim();
+    if (!ip) { out.hidden = false; summary.textContent = "请输入公网 IP；不自动推断并向第三方发送本机地址。"; return; }
+    var live = document.getElementById("compare-live").checked ? "1" : "0";
+    fetch("/v1/ip/" + encodeURIComponent(ip) + "/compare?live=" + live, { headers: { Accept: "application/json" } })
+      .then(function (r) { if (!r.ok) throw new Error("comparison failed"); return r.json(); })
+      .then(show).catch(function () { out.hidden = false; summary.textContent = "对比失败：需要有效公网 IP。"; });
   });
 
   document.getElementById("tz").addEventListener("click", function () {
