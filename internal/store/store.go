@@ -3,10 +3,11 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"net/netip"
 	"time"
 
 	"ipd/internal/privacy"
@@ -40,8 +41,57 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.DB.Close() }
 
-func (s *Store) migrate() error {
-	_, err := s.DB.Exec(schema)
+func (s *Store) migrate() (err error) {
+	// Serialize schema inspection and upgrade across Store instances/processes.
+	ctx := context.Background()
+	conn, err := s.DB.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_, rollbackErr := conn.ExecContext(ctx, "ROLLBACK")
+			if rollbackErr != nil {
+				err = fmt.Errorf("%w; rollback: %v", err, rollbackErr)
+			}
+		}
+	}()
+	if _, err = conn.ExecContext(ctx, schema); err != nil {
+		return err
+	}
+	rows, err := conn.QueryContext(ctx, "PRAGMA table_info(history)")
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var def any
+		if err = rows.Scan(&cid, &name, &typ, &notnull, &def, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		found = found || name == "provenance"
+	}
+	err = rows.Err()
+	closeErr := rows.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if !found {
+		if _, err = conn.ExecContext(ctx, "ALTER TABLE history ADD COLUMN provenance TEXT"); err != nil {
+			return err
+		}
+	}
+	_, err = conn.ExecContext(ctx, "COMMIT")
 	return err
 }
 
@@ -77,6 +127,8 @@ CREATE TABLE IF NOT EXISTS history (
   type TEXT,
   flags TEXT
 );
+CREATE INDEX IF NOT EXISTS history_ip_ts ON history(ip, ts);
+CREATE INDEX IF NOT EXISTS history_ts ON history(ts);
 CREATE TABLE IF NOT EXISTS watches (
   id TEXT PRIMARY KEY,
   target TEXT,
@@ -186,59 +238,74 @@ func boolInt(b bool) int {
 	return 0
 }
 
-// AddHistory records a daily snapshot and returns true when the type or ASN changed.
+// AddHistory records a local observation with unknown legacy provenance.
 func (s *Store) AddHistory(ip, prefix, cc, typ, flags string, asn int, ts time.Time) (bool, error) {
-	var prevType, prevCC string
-	var prevASN int
-	err := s.DB.QueryRow(`SELECT asn, cc, type FROM history WHERE ip=? ORDER BY ts DESC LIMIT 1`, ip).Scan(&prevASN, &prevCC, &prevType)
-	changed := false
-	if err == nil {
-		changed = prevASN != asn || prevCC != cc || prevType != typ
-	} else if !errors.Is(err, sql.ErrNoRows) {
+	return s.AddHistoryWithProvenance(ip, prefix, cc, typ, flags, asn, ts, nil)
+}
+
+// AddHistoryWithProvenance records an observation; nil provenance means unknown.
+func (s *Store) AddHistoryWithProvenance(ip, prefix, cc, typ, flags string, asn int, ts time.Time, provenance json.RawMessage) (bool, error) {
+	if len(provenance) > 0 && !json.Valid(provenance) {
+		return false, fmt.Errorf("invalid provenance JSON")
+	}
+	addr, err := historyAddr(ip)
+	if err != nil {
 		return false, err
 	}
-	_, err = s.DB.Exec(`INSERT INTO history(ip, prefix, ts, asn, cc, type, flags) VALUES(?,?,?,?,?,?,?)`,
-		ip, prefix, ts.Unix(), asn, cc, typ, flags)
+	ip = addr.String()
+	// Compatibility reads include legacy aliases; do not rewrite stored evidence.
+	prior, _, err := s.readHistory(addr, netip.Prefix{}, -1<<63, 1<<63-1)
+	if err != nil {
+		return false, err
+	}
+	changed := false
+	if len(prior) > 0 {
+		prev := prior[len(prior)-1]
+		changed = prev.ASN != asn || prev.CC != cc || prev.Type != typ
+	}
+
+	_, err = s.DB.Exec(`INSERT INTO history(ip, prefix, ts, asn, cc, type, flags, provenance) VALUES(?,?,?,?,?,?,?,?)`,
+		ip, prefix, ts.Unix(), asn, cc, typ, flags, nullableJSON(provenance))
 	return changed, err
 }
 
 // History lists events derived from successive snapshots.
 func (s *Store) History(ip string, since time.Time) ([]Event, error) {
-	rows, err := s.DB.Query(`SELECT ts, asn, cc, type, flags FROM history WHERE ip=? AND ts>=? ORDER BY ts`, ip, since.Unix())
+	return s.historyUntil(ip, since, 1<<63-1)
+}
+
+// HistoryUntil excludes future-dated observations from a local evidence window.
+func (s *Store) HistoryUntil(ip string, since, until time.Time) ([]Event, error) {
+	return s.historyUntil(ip, since, until.Unix())
+}
+
+func (s *Store) historyUntil(ip string, since time.Time, until int64) ([]Event, error) {
+	addr, err := historyAddr(ip)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	type snap struct {
-		ts          int64
-		asn         int
-		cc, typ, fl string
+	snaps, _, err := s.readHistory(addr, netip.Prefix{}, since.Unix(), until)
+	if err != nil {
+		return nil, err
 	}
-	var snaps []snap
-	for rows.Next() {
-		var s snap
-		if err := rows.Scan(&s.ts, &s.asn, &s.cc, &s.typ, &s.fl); err != nil {
-			return nil, err
-		}
-		snaps = append(snaps, s)
-	}
-	var ev []Event
+	return historyEvents(snaps), nil
+}
+
+func historyEvents(snaps []Observation) []Event {
+	ev := []Event{}
 	for i := 1; i < len(snaps); i++ {
 		a, b := snaps[i-1], snaps[i]
-		if a.asn != b.asn {
-			ev = append(ev, Event{TS: time.Unix(b.ts, 0).UTC(), Field: "asn", From: fmt.Sprint(a.asn), To: fmt.Sprint(b.asn)})
+		if a.ASN != b.ASN {
+			ev = append(ev, Event{TS: b.TS, Field: "asn", From: fmt.Sprint(a.ASN), To: fmt.Sprint(b.ASN)})
 		}
-		if a.cc != b.cc {
-			ev = append(ev, Event{TS: time.Unix(b.ts, 0).UTC(), Field: "cc", From: a.cc, To: b.cc})
+		if a.CC != b.CC {
+			ev = append(ev, Event{TS: b.TS, Field: "cc", From: a.CC, To: b.CC})
 		}
-		if a.typ != b.typ {
-			ev = append(ev, Event{TS: time.Unix(b.ts, 0).UTC(), Field: "type", From: a.typ, To: b.typ})
+		if a.Type != b.Type {
+			ev = append(ev, Event{TS: b.TS, Field: "type", From: a.Type, To: b.Type})
 		}
 	}
-	if ev == nil {
-		ev = []Event{}
-	}
-	return ev, nil
+	return ev
 }
 
 // Event is one field change.

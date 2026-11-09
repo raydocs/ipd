@@ -255,8 +255,21 @@ func (s *Service) recordHistory(ip string, p lookup.Profile, class string) error
 	if s.DB == nil {
 		return nil
 	}
+	addr, err := netip.ParseAddr(ip)
+	if err != nil || addr.Zone() != "" {
+		return fmt.Errorf("invalid IP")
+	}
+	ip = addr.Unmap().String()
+	now := s.now()
+	if _, err := s.DB.PurgeHistory(now, s.Cfg.HistoryWindow()); err != nil {
+		return err
+	}
 	flags := strings.Join(p.Flags, ",")
-	_, err := s.DB.AddHistory(ip, p.Prefix, p.CC, class, flags, p.ASN, s.now())
+	provenance, err := json.Marshal(s.decorate(sourcesFrom(p)))
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.AddHistoryWithProvenance(ip, p.Prefix, p.CC, class, flags, p.ASN, now, provenance)
 	return err
 }
 
@@ -378,19 +391,40 @@ func (s *Service) Prefix(cidr string) (Report, error) {
 	return Report{Verdict: v, Summary: fmt.Sprintf("%s contamination %.2f", comp.CIDR, comp.Contamination), Data: comp, Sources: []Source{{ID: "cloud_ranges"}, {ID: "vpn_lists"}, {ID: "tor_exits"}}, CachedAt: s.now(), Attribution: s.attr()}, nil
 }
 
-// History returns field changes.
+// History returns local stored observations and field differences, never BGP history.
 func (s *Service) History(ip string, days int) (Report, error) {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil || addr.Zone() != "" {
+		return Report{}, fmt.Errorf("invalid IP")
+	}
+	ip = addr.Unmap().String()
+	now := s.now()
 	if s.DB == nil {
-		return Report{Verdict: "abstain", Summary: "no store", Data: map[string]any{"events": []any{}}, Sources: []Source{}, CachedAt: s.now()}, nil
+		return Report{Verdict: "abstain", Summary: "no local store", Data: map[string]any{"events": []any{}, "snapshots": []any{}, "evidence_scope": "local_stored_observations"}, Sources: []Source{}, CachedAt: now}, nil
+	}
+	retention := s.Cfg.HistoryWindow()
+	if _, err := s.DB.PurgeHistory(now, retention); err != nil {
+		return Report{}, err
 	}
 	if days <= 0 || days > 365 {
 		days = 90
 	}
-	ev, err := s.DB.History(ip, s.now().AddDate(0, 0, -days))
+	since := now.AddDate(0, 0, -days)
+	if cut := now.Add(-retention); since.Before(cut) {
+		since = cut
+	}
+	bucket, _ := netip.ParsePrefix(prefix24(addr.Unmap()))
+	snapshots, ev, neighbors, err := s.DB.HistoryView(ip, bucket, since, now)
 	if err != nil {
 		return Report{}, err
 	}
-	return Report{Verdict: "ok", Summary: fmt.Sprintf("%d changes", len(ev)), Data: map[string]any{"events": ev}, Sources: []Source{{ID: "history"}}, CachedAt: s.now()}, nil
+	verdict := "partial"
+	if len(snapshots) == 0 {
+		verdict = "abstain"
+	}
+	return Report{Verdict: verdict, Summary: fmt.Sprintf("%d local observations, %d field differences; not BGP history or evidence of causality", len(snapshots), len(ev)),
+		Data:    map[string]any{"events": ev, "snapshots": snapshots, "neighbors": neighbors, "evidence_scope": "local_stored_observations", "since": since.UTC(), "until": now.UTC(), "retention_seconds": int64(retention / time.Second), "coverage": "observed rows only; gaps and unobserved addresses are unknown"},
+		Sources: []Source{{ID: "history", Attribution: "Local stored observations; legacy provenance may be unknown"}}, CachedAt: now}, nil
 }
 
 // Sources lists datasets.
