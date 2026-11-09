@@ -32,7 +32,7 @@ type Comparison struct {
 // Fixed official endpoints ignore configurable legacy bases to prevent credential forwarding.
 func CompareOnline(ctx context.Context, ip netip.Addr, keys map[string]string, live, offline bool, client *http.Client) []Comparison {
 	out := make([]Comparison, 0, 5)
-	bases := map[string]string{"ipqs": "https://ipqualityscore.com/api/json/ip", "abuseipdb": "https://api.abuseipdb.com/api/v2/check", "ipapiis": "https://api.ipapi.is/"}
+	bases := map[string]string{"ipqs": "https://ipqualityscore.com/api/json/ip", "abuseipdb": "https://api.abuseipdb.com/api/v2/check", "ipapiis": "https://api.ipapi.is/", "proxycheck": "https://proxycheck.io/v3"}
 	for _, p := range All(keys, bases, client) {
 		if p.ID() != "scamalytics" && p.ID() != "ipqs" && p.ID() != "ipapiis" && p.ID() != "proxycheck" && p.ID() != "abuseipdb" {
 			continue
@@ -68,6 +68,9 @@ func CompareOnline(ctx context.Context, ip netip.Addr, keys map[string]string, l
 }
 
 func normalizeComparison(row Comparison, raw map[string]any, ip netip.Addr) Comparison {
+	if row.ID == "proxycheck" {
+		return normalizeProxycheck(row, raw, ip)
+	}
 	if row.ID == "ipapiis" {
 		return normalizeIPAPIIS(row, raw, ip)
 	}

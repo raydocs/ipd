@@ -11,10 +11,10 @@
   不使用 legacy URL overrides，避免把凭据转交任意地址。白名单输出类型校验后的值，绝不输出 raw、
   请求 URL、上游消息或网络错误。5 秒 deadline、禁止所有重定向、1 MiB body 上限，
   非 2xx/null/错误 schema/字段类型异常为 error；429 不重试、不隐瞒为安全。
-- Scamalytics、proxycheck：保留行与许可说明；本 Draft **未实现比较归一化**。
+- Scamalytics：保留行与许可说明；本 Draft **未实现比较归一化**。
   有 key/live 时 `schema_adapter_pending`，不会调用 legacy adapter。
   Scamalytics 当前官方 v3 要用户名与分配的 API 节点，现配置不足；不猜账户信息。
-  proxycheck 当前 v3 与既有 v2 有嵌套结构、布尔类型差异，不隐式混用。
+- proxycheck：独立增量只接当前v3嵌套/布尔契约，不隐式兼容v2。见 [适配边界](proxycheck-comparison.md)。
 - ipapi.is：后续独立增量接入 keyed 的有类型观察，详见 [适配器边界](ipapiis-comparison.md)。
 - IPinfo Lite：复用 lookup 的逐源 hit 与 metadata，保留 version、更新时间、attribution、license。
   `fixture-*` 明确是仓库合成证据，不是线上数据库；无 hit 为 unknown，不拿 merged 值补足。
@@ -66,7 +66,7 @@ confidence 是来源性质，不是概率。scope 明示国家/ASN 与风险画�
 429/5xx、malformed、超限、timeout、redirect 拒绝；测试 transport 将官方请求重定向到本地
 fixture，禁止真实服务访问。五项在线源验证无 opt-in / offline / 无 key 零调用。
 分歧测试验证同分不同语义，不把缺源字段计入冲突。Node 使用无浏览器 DOM stub 检查
-默认关闭、明确 opt-in 和 textContent 安全输出。其余两源完整 fixtures 与 GeoLite MMDB 逐源
+默认关闭、明确 opt-in 和 textContent 安全输出。其余Scamalytics完整 fixtures 与 GeoLite MMDB 逐源
 接口为后续单元，不能用当前通过的测试声称它们完成。
 
 旧代码回归实际执行：仅新增 `TestHTTPRejectsUnsafeResponses` 时，原 HTTP 接受 JSON null，
