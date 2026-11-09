@@ -44,3 +44,10 @@ TLS fixture隔离子进程，不污染全套信任根。分支全Go、全部Node
 分支全Go/Node/provider race通过；独立R1 approve，51项反例由总控再跑race通过。
 最终候选组合Go/Node/四包race正在执行，尚未验收。真实API/key/浏览器/线上未验证。
 下一步取得组合结论后验收，再补proxycheck、Scamalytics及GeoLite独立观察缺口，之后UI等清单。
+
+2026-11-08 丹佛18:10：用户要求20:00前逐项状态。#33组合仍在跑，禁止提前验收。
+本批顺序调整：多源最多再补proxycheck；Scamalytics/GeoLite完整适配移到后续，不挡UI/历史/中国权重/评测/runner收尾。
+当前清单：UI未开始；历史/邻居未开始；中国Globalping健康权重未开始；住宅评测框架未开始；
+runner23/25/26/27代码及本地fixture已验收，真实core/Linux runtime/协议转换仍未验证。
+将并行启动互不重叠的历史、健康权重、住宅评测三个独立Draft；总控负责UI及组合/独立审查验收。
+20:00是状态汇总期限，不等同全部功能/真实服务验证完成期限。每项必须区分partial、review、local、online。
