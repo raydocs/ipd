@@ -205,3 +205,13 @@ providers/app/api/lookup race通过（app82.185s、api37.813s）；日志
 `/tmp/ipd-pr32-fix-20261108/r2-combo-{go,node,race}.log`。
 本结论取代上段“尚未整体验收”，不改变四项pending缺口或真实provider/浏览器/线上未验证的边界。
 下一独立增量继续补pending适配器，不能据此宣称七源全部完成。
+
+## #33 ipapi.is 独立比较适配（候选，2026-11-08）
+
+Draft [#33](https://github.com/raydocs/ipd/pull/33) head `91156cf`，base main `3a08322`，
+依赖已验收未合并的#32。固定官方端点、可选key/live/offline门控；返回IP一致性校验；
+仅输出有类型的country/ASN/proxy/vpn/tor，不派生风险分。非布尔VPN形态保守error，缺测unknown。
+旧父提交新增回归实际FAIL，分支全Go/Node/provider race通过；独立R1 approve、51项反例race通过，
+总控复跑独立反例race亦通过。最终候选组合仍执行，尚未验收，保持Draft。
+官方文档核对不代表真实API/权限/额度/准确率验证；未提供真实key、未注册账号或调用provider。
+本项通过也不等于剩余proxycheck、Scamalytics、GeoLite独立MMDB适配完成。

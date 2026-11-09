@@ -38,3 +38,9 @@ TLS fixture隔离子进程，不污染全套信任根。分支全Go、全部Node
 2026-11-08 #32限定增量验收：head93a6288。最终组合main+#13/#15/#20/#22及已验收节点链、
 #28/#29/#30/#31/#32，全Go、Node11/11、providers/app/api/lookup race通过。
 该结论取代上段“组合进行中”；保持Draft。下一单元优先补pending provider adapter，无真实key/公网验证。
+
+2026-11-08 下一独立Draft #33：ipapi.is比较适配，head91156cf，base main3a08322，依赖#32。
+限定新增providers适配/测试及专属文档；不改默认探测或legacy Risk。旧父版本实际失败，
+分支全Go/Node/provider race通过；独立R1 approve，51项反例由总控再跑race通过。
+最终候选组合Go/Node/四包race正在执行，尚未验收。真实API/key/浏览器/线上未验证。
+下一步取得组合结论后验收，再补proxycheck、Scamalytics及GeoLite独立观察缺口，之后UI等清单。
