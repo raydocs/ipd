@@ -68,3 +68,9 @@ runner23/25/26/27代码及本地fixture已验收，真实core/Linux runtime/协�
 #37 R1默认/me事实与空输入旧报告两项P2修至8952fbf；原独立反例旧6/8新8/8，Node回归通过，full/race复测中。
 视觉子审受image-read hook阻挡未看截图，仅静态建议；已修空壳/ghost tab/unknown/触点等，不标像素审查通过。
 #36独立审查待回。修正批次组合及#34/#37第二轮聚焦审查接下来执行；不提前整体验收。
+
+丹佛18:33：#37 R2 approve（8952fbf），原夹具旧6/8新8/8、Node18/18，尚待最终冻结组合结果确认。
+#38 proxycheck v3独立可选Draft aec97cf已开，base main3a08322，依赖#32/#33；仅本批最后一个多源适配。
+旧码反证FAIL、新分支窄/race/fullGo/Node通过。最终组合追加#38，UI consent一行精确整合保留四源名称。
+再次启动冻结组合全Go/Node/十包race；不把编译中修改过的上一批混合状态当作最终快照证据。
+#34 R2待回，#36 R1待回；#35限定组件本地验收。runner整包race46.478s已通过，协议转换/真实core仍缺。

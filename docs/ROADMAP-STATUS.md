@@ -262,3 +262,11 @@ Scamalytics及GeoLite独立MMDB待后续。优先推进其余项目，不再让�
 均有真实旧码反证和修后窄测。第二轮审查/最终修正组合待结论；#36审查仍待回。
 UI视觉委派因image-read hook未看截图，只静态检查，**不是截图/像素审核通过**。
 所有项保持Draft，无真实公网/core/账号/key/部署验证。
+
+### 丹佛18:33 状态
+
+#37 `8952fbf` 第二轮独立approve，原两P2关闭；Node18/18、独立补充7/7与资产/隐私检查通过。
+#38 [proxycheck v3](https://github.com/raydocs/ipd/pull/38) `aec97cf` 已开独立Draft：有key+live+非offline才请求；
+固定HTTPS、v3嵌套/布尔、唯一IP身份，warning受控保留、无raw/key输出；父版本反证实际FAIL，
+分支全Go/Node/race通过。独立审查与最终冻结组合待完成。完成后本批不再扩多源。
+四项修正加#38的最终冻结组合重跑中；#34第二轮、#36首轮仍待回，均不提前验收。
