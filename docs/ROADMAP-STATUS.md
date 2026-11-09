@@ -239,3 +239,16 @@ Scamalytics及GeoLite独立MMDB待后续。优先推进其余项目，不再让�
 独立R1 approve，总控51项反例race复跑通过。#33本地验收、保持Draft，不合并。
 日志 `/tmp/ipd-pr32-fix-20261108/ipapiis-combo-{go,node,race}.log`。
 此结论取代此前待结果，不改变真实API/权限/额度/准确性/浏览器/线上未验证的范围。
+
+### 丹佛18:18 实现候选落地（均未验收）
+
+| 项目 | Draft / head | 当前范围与剩余 |
+|---|---|---|
+| 住宅评测 | [#34](https://github.com/raydocs/ipd/pull/34) `16341f4` | 格式、离线CLI、合成报告；非总体准确率 |
+| 中国健康 | [#35](https://github.com/raydocs/ipd/pull/35) `d9646e4` | 有界锚点历史和证据优先级；不伪造加权投票/概率 |
+| 历史邻居 | [#36](https://github.com/raydocs/ipd/pull/36) `dbd0cda` | 惰性保留清理、本地快照与匿名邻居；无空闲定时清理/公开BGP导入 |
+| UI重做 | [#37](https://github.com/raydocs/ipd/pull/37) `ec1137a` | 响应报告卡/并列表/地理示意/默认关闭本机脱敏SVG；完整底图与公开分享仍缺 |
+
+#37已在本地Chromium1280×800和390×844检查，无全页水平溢出/第三方资源；合成lookup显示地图点，
+分享默认disabled、勾选才开启，SVG无合成IP/秘密，本地storage为空。服务仅loopback/offline，测试后关闭。
+不能把这称为线上/跨浏览器/辅助技术全验收。四项独立审查与最终组合仍待完成。

@@ -55,3 +55,9 @@ runner23/25/26/27代码及本地fixture已验收，真实core/Linux runtime/协�
 #33最终验收：91156cf，完整候选组合Go/Node11项及providers/app/api/lookup race全部通过，
 独立R1 approve；保持Draft。日志ipapiis-combo-{go,node,race}.log。真实API/线上未验证。
 健康权重子任务获准仅service.go Sample→gfw.Obs新增字段透传；历史方法区域与其不重叠。
+
+丹佛18:18批次：#34住宅评测16341f4、#35健康证据排序d9646e4、#36历史/匿名邻居dbd0cda、
+#37证据UI ec1137a已开独立Draft，全部base main3a08322。前三作者局部/full/race通过但尚未独立验收；
+#37本地浏览器桌面/390px、Node及窄Go通过，full/race另记。#37依赖#28/#32/#33，独立diff起570e9d4。
+最终候选组合新增四项，history OpenAPI一行上下文冲突已精确保留其他候选并手动替换对应history操作。
+全套/九包race正在跑；不提前验收。下一步独立审查三项后审UI，修复发现再更新精确head。
