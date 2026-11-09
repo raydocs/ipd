@@ -149,6 +149,7 @@ type HTTP struct {
 	Name, LicenseText, Credit, Base, KeyName, Key string
 	Build                                         func(base, key, ip string) (string, http.Header)
 	Client                                        *http.Client
+	rejectDuplicateKeys                           bool
 }
 
 func (h HTTP) ID() string          { return h.Name }
@@ -190,6 +191,11 @@ func (h HTTP) Lookup(ctx context.Context, ip netip.Addr) (map[string]any, error)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("%s status %d", h.Name, resp.StatusCode)
+	}
+	if h.rejectDuplicateKeys {
+		if err := validateUniqueJSON(b); err != nil {
+			return nil, fmt.Errorf("ambiguous JSON response")
+		}
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(b, &raw); err != nil || raw == nil {

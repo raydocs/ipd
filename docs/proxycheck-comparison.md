@@ -28,3 +28,11 @@ v2拒绝、凭据编码、quota/HTTP/redirect失败及来源分歧。
 父91156cf新增回归实际FAIL（schema_adapter_pending，零调用）；修后窄测试/race通过。
 日志 /tmp/ipd-batch-root-checks/proxycheck-*.log。全套、独立审查和组合验收另行记录。
 真实provider/浏览器/线上未验证；分享功能不因本适配改变。
+
+### 首轮审查修正：解码前重复成员拒绝
+
+共享map解码会丢失重复的目标IP成员。比较层现仅对proxycheck启用解码前token扫描，
+拒绝同名/JSON转义等价成员及嵌套字段重复，深度上限64；保留原来的规范化地址重复检查。
+其他legacy适配默认解码行为不变。真实旧候选反例错误输出proxy:false，修后返回受控错误且无字段/分数。
+独立反例复跑的overlay必须重定位到当前checkout；未匹配路径的早期命令不算反例已运行。
+确切日志proxycheck-review-{before,after}-exact.log、proxycheck-duplicates-before.log位于/tmp/ipd-batch-root-checks/。

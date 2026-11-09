@@ -139,3 +139,21 @@ func TestComparisonProxycheckOpaqueKey(t *testing.T) {
 		}
 	}
 }
+
+func TestProxycheckRejectsDuplicateDecodedMembers(t *testing.T) {
+	for _, body := range []string{
+		`{"status":"ok","1.1.1.1":{"detections":{"proxy":true}},"1.1.1.1":{"detections":{"proxy":false}}}`,
+		`{"status":"ok","1.1.1.1":{"detections":{"proxy":true}},"\u0031.1.1.1":{"detections":{"proxy":false}}}`,
+		`{"status":"error","status":"ok","1.1.1.1":{"detections":{"proxy":false}}}`,
+		`{"status":"ok","1.1.1.1":{"detections":{"proxy":true,"pr\u006fxy":false}}}`,
+	} {
+		client := &http.Client{Transport: comparisonTransport(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+		})}
+		for _, row := range CompareOnline(context.Background(), netip.MustParseAddr("1.1.1.1"), map[string]string{"proxycheck": "SYNTHETIC_SECRET"}, true, false, client) {
+			if row.ID == "proxycheck" && (row.Status != "error" || len(row.Fields) != 0 || row.Score != nil) {
+				t.Fatalf("ambiguous evidence accepted: %+v", row)
+			}
+		}
+	}
+}

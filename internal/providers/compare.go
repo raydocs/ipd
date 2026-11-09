@@ -50,6 +50,17 @@ func CompareOnline(ctx context.Context, ip netip.Addr, keys map[string]string, l
 		case bases[p.ID()] == "":
 			row.Skipped = "schema_adapter_pending"
 		default:
+			if p.ID() == "proxycheck" {
+				h, ok := p.(HTTP)
+				if !ok {
+					row.Status = "error"
+					row.Error = "provider_request_failed"
+					out = append(out, row)
+					continue
+				}
+				h.rejectDuplicateKeys = true
+				p = h
+			}
 			at := time.Now().UTC()
 			row.Timestamp = &at
 			bounded, cancel := context.WithTimeout(ctx, 5*time.Second)
