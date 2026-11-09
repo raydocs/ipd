@@ -9,16 +9,27 @@
   var lastEgress = [];
   var requestVersion = 0;
   var shareArtifact = null;
-  function clearReport() {
+  function clearDerived() {
     shareArtifact = null;
+    document.getElementById("location-panel").hidden = true;
+    document.getElementById("share-controls").hidden = true;
     document.getElementById("share-opt-in").checked = false;
     document.getElementById("share-download").disabled = true;
     document.getElementById("geo-map").hidden = true;
     document.getElementById("report-facts").textContent = "";
     document.getElementById("map-note").textContent = "没有可核验坐标。不会用 (0,0) 代替未知。";
   }
+  function clearReport() {
+    clearDerived();
+    verdict.textContent = ""; verdict.className = "verdict";
+    summary.textContent = ""; detail.textContent = "";
+    document.getElementById("comparison-results").hidden = true;
+    document.getElementById("comparison-wrap").hidden = true;
+    document.getElementById("comparison-scroll-note").hidden = true;
+    document.getElementById("comparison-rows").textContent = "";
+  }
   function renderEvidence(rep) {
-    clearReport();
+    clearDerived();
     if (!window.ipdReport) return;
     var model = window.ipdReport.model(rep);
     var facts = document.getElementById("report-facts");
@@ -26,6 +37,7 @@
       var card = document.createElement("div"); card.className = "fact";
       var label = document.createElement("p"); label.textContent = fact.label;
       var value = document.createElement("strong"); value.textContent = fact.value;
+      if (fact.value === "unknown") card.className += " unknown";
       card.appendChild(label); card.appendChild(value); facts.appendChild(card);
     });
     if (model.point) {
@@ -34,6 +46,8 @@
       document.getElementById("geo-map").hidden = false;
       document.getElementById("map-note").textContent = "数据库地理坐标示意，不是设备位置或精确定位；请在原始证据中核对来源与时效。";
     }
+    document.getElementById("location-panel").hidden = false;
+    document.getElementById("share-controls").hidden = false;
     shareArtifact = window.ipdReport.shareSVG(rep);
     verdict.textContent = model.label;
   }
@@ -77,6 +91,8 @@
     detail.textContent = JSON.stringify(rep.data || {}, null, 2);
     var rows = rep.data && rep.data.rows;
     document.getElementById("comparison-results").hidden = !Array.isArray(rows);
+    document.getElementById("comparison-wrap").hidden = !Array.isArray(rows);
+    document.getElementById("comparison-scroll-note").hidden = !Array.isArray(rows);
     var body = document.getElementById("comparison-rows");
     body.textContent = "";
     if (Array.isArray(rows)) rows.forEach(function (row) {

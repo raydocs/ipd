@@ -25,3 +25,11 @@ localStorage/sessionStorage均0。测试服务仅loopback且offline，测试后�
 browser-screenshot-127-0-0-1-mw8kjyjr-c3b94c2c.png，位于T3 browser-artifacts。
 未做真实线上、其他浏览器、屏幕阅读器或完整WCAG认证；独立代码/视觉审查与最终组合待完成。
 地图不是完整地理底图，真实公开分享服务仍默认关闭；不把这个UI增量称为所有产品缺口已完成。
+
+### 首轮审查修正
+
+代码审查两项P2：兼容 /v1/me 扁平type/cc/asn；空输入lookup/compare完整清空旧结论、JSON和表。
+原独立反例在ec1137a实际6通过/2失败，修后8通过。补四种响应合同及完整reset回归。
+静态视觉建议另修：加载态隐藏空地图/分享/表wrapper，空事实不占位；unknown样式、低优先按钮、
+本机工具标题、移动点击目标、滚动说明。视觉审查因image-read hook未读取截图，仅静态建议，
+不能记为像素/截图审查通过。根线程此前真实浏览器DOM检查与其不是同一类证据。

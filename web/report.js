@@ -6,6 +6,7 @@
   function model(rep) {
     rep = object(rep);
     var data = object(rep.data), geo = object(data.geo), asn = object(data.asn);
+    var me = Object.hasOwn(data, "ipv4") || Object.hasOwn(data, "ipv6");
     var verdict = Object.hasOwn(labels, rep.verdict) ? rep.verdict : "unknown";
     var sources = Array.isArray(rep.sources) ? rep.sources.length : 0;
     var point = null;
@@ -15,10 +16,10 @@
       point = {x:(geo.lon + 180) / 360 * 600, y:(90 - geo.lat) / 180 * 260};
     }
     var facts = [
-      {label:"住宅分类", value:scalar(object(data.residential).class)},
+      {label:"住宅分类", value:scalar(me ? data.type : object(data.residential).class)},
       {label:"原生 / 广播", value:scalar(object(data.native).verdict)},
-      {label:"国家 / 地区", value:scalar(geo.cc)},
-      {label:"ASN", value:scalar(asn.asn)}
+      {label:"国家 / 地区", value:scalar(me ? data.cc : geo.cc)},
+      {label:"ASN", value:scalar(me ? data.asn : asn.asn)}
     ];
     return {verdict:verdict, label:labels[verdict], sources:sources, facts:facts, point:point};
   }

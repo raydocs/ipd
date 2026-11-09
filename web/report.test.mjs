@@ -51,3 +51,29 @@ test('older request cannot overwrite the latest report',async()=>{
  pending[0]({ok:true,json:async()=>({summary_md:'STALE',data:{}})});await flush();
  assert.equal(get('summary').textContent,'LATEST');
 });
+
+test('me, lookup, risk and compare preserve known facts without extra requests',()=>{
+ const h=helpers();
+ for(const [rep,want] of [
+  [{data:{ipv4:'203.0.113.29',type:'residential_fixed',cc:'ZZ',asn:64512}},['residential_fixed','unknown','ZZ','64512']],
+  [{data:{residential:{class:'hosting'},native:{verdict:'abstain'}}},['hosting','abstain','unknown','unknown']],
+  [{data:{geo:{cc:'ZZ'},asn:{asn:64512}}},['unknown','unknown','ZZ','64512']],
+  [{data:{rows:[]}},['unknown','unknown','unknown','unknown']]
+ ])assert.deepEqual(Array.from(h.model(rep).facts,f=>f.value),want);
+});
+
+test('empty lookup and compare completely reset the prior report',async()=>{
+ const nodes=new Map(),requests=[];
+ const get=id=>{if(!nodes.has(id))nodes.set(id,{value:'',checked:false,children:[],appendChild(n){this.children.push(n)},addEventListener(k,fn){this[k]=fn},set textContent(v){this.text=v;this.children=[]},get textContent(){return this.text}});return nodes.get(id)};
+ vm.runInNewContext(readFileSync(new URL('./app.js',import.meta.url),'utf8'),{document:{getElementById:get,createElement:()=>({appendChild(){}})},window:{ipdReport:helpers()},fetch:async url=>{requests.push(url);return {ok:true,json:async()=>({verdict:'safe',summary_md:'OLD_REPORT',data:{ip:'203.0.113.29',rows:[{id:'synthetic',fields:{country:'ZZ'}}]}})}}});
+ for(const action of ['lookup','compare']){
+  get('ip').value='203.0.113.29';get('compare').submit({preventDefault(){}});await new Promise(r=>setImmediate(r));
+  assert.equal(get('comparison-wrap').hidden,false);
+  get('ip').value='';
+  if(action==='lookup')get('lookup').click();else get('compare').submit({preventDefault(){}});
+  assert.equal(get('detail').textContent,'');assert.equal(get('verdict').textContent,'');
+  assert.equal(get('comparison-wrap').hidden,true);assert.equal(get('comparison-results').hidden,true);assert.equal(get('comparison-rows').children.length,0);
+  assert.equal(get('share-controls').hidden,true);assert.equal(get('location-panel').hidden,true);
+ }
+ assert.equal(requests.length,2);
+});
