@@ -61,3 +61,10 @@ runner23/25/26/27代码及本地fixture已验收，真实core/Linux runtime/协�
 #37本地浏览器桌面/390px、Node及窄Go通过，full/race另记。#37依赖#28/#32/#33，独立diff起570e9d4。
 最终候选组合新增四项，history OpenAPI一行上下文冲突已精确保留其他候选并手动替换对应history操作。
 全套/九包race正在跑；不提前验收。下一步独立审查三项后审UI，修复发现再更新精确head。
+
+丹佛18:28：首轮四项组合fullGo/Node16/九包race通过，额外nodes整包race46.478s通过。
+#35独立approve+总控隔离probe/gfw race通过，限定锚点历史/排序可验收；无生产锚点采集，非投票权重上线。
+#34 R1 Unicode键折叠P2已补ASCII键检查，bec6454；旧码反证5例FAIL、真实CLI被拒绝，分支fullGo/Node/race通过。
+#37 R1默认/me事实与空输入旧报告两项P2修至8952fbf；原独立反例旧6/8新8/8，Node回归通过，full/race复测中。
+视觉子审受image-read hook阻挡未看截图，仅静态建议；已修空壳/ghost tab/unknown/触点等，不标像素审查通过。
+#36独立审查待回。修正批次组合及#34/#37第二轮聚焦审查接下来执行；不提前整体验收。
