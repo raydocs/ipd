@@ -51,3 +51,7 @@ TLS fixture隔离子进程，不污染全套信任根。分支全Go、全部Node
 runner23/25/26/27代码及本地fixture已验收，真实core/Linux runtime/协议转换仍未验证。
 将并行启动互不重叠的历史、健康权重、住宅评测三个独立Draft；总控负责UI及组合/独立审查验收。
 20:00是状态汇总期限，不等同全部功能/真实服务验证完成期限。每项必须区分partial、review、local、online。
+
+#33最终验收：91156cf，完整候选组合Go/Node11项及providers/app/api/lookup race全部通过，
+独立R1 approve；保持Draft。日志ipapiis-combo-{go,node,race}.log。真实API/线上未验证。
+健康权重子任务获准仅service.go Sample→gfw.Obs新增字段透传；历史方法区域与其不重叠。

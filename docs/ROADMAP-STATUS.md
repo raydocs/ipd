@@ -232,3 +232,10 @@ Scamalytics及GeoLite独立MMDB待后续。优先推进其余项目，不再让�
 | 双core #23/#25/#26/#27 | 代码与本地helper/撤销fixture已验收；转换和真实core仍缺 | 无真实core/Linux运行/机场验证 |
 
 接下来分互不重叠的小单元开Draft；没有PR或尚未独立审查/组合的项目不会标完成。
+
+### #33 最终验收结果
+
+`91156cf` 已完成最终候选组合全Go、Node11/11和providers/app/api/lookup race，均通过；
+独立R1 approve，总控51项反例race复跑通过。#33本地验收、保持Draft，不合并。
+日志 `/tmp/ipd-pr32-fix-20261108/ipapiis-combo-{go,node,race}.log`。
+此结论取代此前待结果，不改变真实API/权限/额度/准确性/浏览器/线上未验证的范围。
