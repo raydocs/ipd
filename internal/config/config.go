@@ -26,6 +26,7 @@ type Config struct {
 	TrustProxy        bool
 	EnrichTimeout     time.Duration
 	LogRetention      time.Duration
+	HistoryRetention  time.Duration
 	AnonymousRPM      int
 	KeyedRPM          int
 	ProbePerHour      int
@@ -81,6 +82,7 @@ func FromEnv() *Config {
 		TrustProxy:        envBool("IPD_TRUST_PROXY", false),
 		EnrichTimeout:     envDuration("IPD_ENRICH_TIMEOUT", 1200*time.Millisecond),
 		LogRetention:      envDuration("IPD_LOG_RETENTION", 7*24*time.Hour),
+		HistoryRetention:  envDuration("IPD_HISTORY_RETENTION", DefaultHistoryRetention),
 		AnonymousRPM:      envInt("IPD_ANON_RPM", 60),
 		KeyedRPM:          envInt("IPD_KEY_RPM", 600),
 		ProbePerHour:      envInt("IPD_PROBE_PER_HOUR", 10),
@@ -142,6 +144,17 @@ func FromEnv() *Config {
 	// IPD_DATA_UPDATE=false keeps a long-running serve on the bundled snapshot.
 	c.DataUpdate = envBool("IPD_DATA_UPDATE", !c.Offline)
 	return c
+}
+
+// DefaultHistoryRetention bounds local observations even for manually constructed configs.
+const DefaultHistoryRetention = 90 * 24 * time.Hour
+
+// HistoryWindow rejects nonpositive configuration by falling back to the safe default.
+func (c *Config) HistoryWindow() time.Duration {
+	if c == nil || c.HistoryRetention <= 0 {
+		return DefaultHistoryRetention
+	}
+	return c.HistoryRetention
 }
 
 // HasAPIKey reports whether the presented token is configured.

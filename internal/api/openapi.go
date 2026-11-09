@@ -106,12 +106,18 @@ func payloadSchemas() oa {
 	submission := func(data oa) oa {
 		return oa{"allOf": []any{schemaRef("JobSubmissionReport"), objectSchema(oa{"data": objectSchema(oa{"result": data})})}}
 	}
+	history := objectSchema(oa{
+		"events":         nullableArray(objectSchema(oa{"ts": timestamp, "field": str, "from": str, "to": str}, "ts", "field", "from", "to")),
+		"snapshots":      arraySchema(objectSchema(oa{"ts": timestamp, "prefix": str, "asn": integer, "cc": str, "type": str, "flags": str, "provenance": nullableArray(oa{"type": "object"})}, "ts", "prefix", "asn", "cc", "type", "flags", "provenance")),
+		"neighbors":      objectSchema(oa{"prefix": str, "observed_addresses": integer, "types": oa{"type": "object", "additionalProperties": integer}}, "prefix", "observed_addresses", "types"),
+		"evidence_scope": str, "coverage": str, "since": timestamp, "until": timestamp, "retention_seconds": integer,
+	}, "events", "snapshots", "evidence_scope")
 	return oa{
 		"MeReport":                reportWithData(objectSchema(oa{"asn": integer, "cc": str, "type": str, "purity": objectSchema(oa{"score": integer, "grade": str}, "score", "grade"), "ipv4": str, "ipv6": str}, "asn", "cc", "type", "purity")),
 		"LookupReport":            reportWithData(lookup),
 		"ASNReport":               reportWithData(objectSchema(oa{"asn": integer, "org": str, "type": str, "cc": str, "prefixes_v4": stringsArray, "prefixes_v6": stringsArray, "upstreams": arraySchema(integer), "peeringdb_type": str, "eyeball_users": integer}, "asn", "org", "type", "cc", "prefixes_v4", "prefixes_v6", "upstreams", "peeringdb_type", "eyeball_users")),
 		"PrefixReport":            reportWithData(objectSchema(oa{"cidr": str, "hosts_seen": integer, "composition": oa{"type": "object", "additionalProperties": number}, "contamination": number, "notable": stringsArray}, "cidr", "hosts_seen", "composition", "contamination", "notable")),
-		"HistoryReport":           reportWithData(objectSchema(oa{"events": nullableArray(objectSchema(oa{"ts": timestamp, "field": str, "from": str, "to": str}, "ts", "field", "from", "to"))}, "events")),
+		"HistoryReport":           reportWithData(history),
 		"SourcesReport":           reportWithData(objectSchema(oa{"sources": nullableArray(source)}, "sources")),
 		"TargetsReport":           reportWithData(objectSchema(oa{"scope": str, "targets": nullableArray(target)}, "scope", "targets")),
 		"DNSLeakReport":           reportWithData(objectSchema(oa{"resolvers": arraySchema(objectSchema(oa{"ip": str, "asn": integer, "cc": str, "ecs": str}, "ip", "asn", "cc", "ecs")), "leak": oa{"type": "boolean"}, "token": str}, "resolvers", "leak", "token")),
@@ -231,7 +237,7 @@ func paths() map[string]any {
 	reportOp("/v1/sources", "get", "Dataset status and attribution", "Dataset metadata, not active egress tests.", "SourcesReport", nil)
 	reportOp("/v1/ip/{ip}", "get", "Passive IP lookup", "Geo, ASN and source disagreements; private/documentation IPs return a reserved verdict.", "LookupReport", bad)
 	reportOp("/v1/ip/{ip}/risk", "get", "Risk evidence", "Purity, residential class and native/broadcast/abstain evidence; an unknown verdict is not a boolean false.", "RiskReport", bad, parameter("live", "query", "Exactly 0 disables live enrichment; other values allow it unless offline configuration disables it.", oa{"type": "string", "default": "1"}, false))
-	reportOp("/v1/ip/{ip}/history", "get", "Stored change history", "Does not probe the target.", "HistoryReport", bad, parameter("days", "query", "Lookback days; absent, non-integer, <=0 or >365 falls back to 90.", oa{"type": "integer", "default": 90}, false))
+	reportOp("/v1/ip/{ip}/history", "get", "Local stored history", "Local observations and field differences only, not BGP history or causal evidence. Anonymous neighbors count observed addresses in a /24 IPv4 or /64 IPv6 bucket (including the requested address), not a scan or routing prefix. Retention is enforced lazily on history reads/writes. Does not probe the target.", "HistoryReport", bad, parameter("days", "query", "Lookback days; absent, non-integer, <=0 or >365 falls back to 90.", oa{"type": "integer", "default": 90}, false))
 	reportOp("/v1/asn/{asn}", "get", "Autonomous system", "No validation error for an unparseable ASN (treated as 0).", "ASNReport", nil)
 	reportOp("/v1/prefix/{cidr}", "get", "Prefix neighbour composition", "Remaining path is a CIDR including slash.", "PrefixReport", bad)
 	batch := reportOp("/v1/batch", "post", "Batch IP risk lookup", "Reads at most 1 MiB. Tries JSON {ips:[...]}; decode failure or empty ips falls back to nonempty trimmed input lines. Empty input produces zero rows. More than 1000 entries is HTTP 400; invalid individual IPs become error rows with HTTP 200. If Accept contains ndjson, flat newline-delimited rows are returned, overriding format and stream; not a stream of Report envelopes.", "BatchReport", bad)

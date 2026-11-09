@@ -42,6 +42,33 @@ func (s *Store) Close() error { return s.DB.Close() }
 
 func (s *Store) migrate() error {
 	_, err := s.DB.Exec(schema)
+	if err != nil {
+		return err
+	}
+	// Upgrade existing databases without rewriting legacy observations.
+	rows, err := s.DB.Query("PRAGMA table_info(history)")
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var def any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &def, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		found = found || name == "provenance"
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	if !found {
+		_, err = s.DB.Exec("ALTER TABLE history ADD COLUMN provenance TEXT")
+	}
 	return err
 }
 
@@ -77,6 +104,8 @@ CREATE TABLE IF NOT EXISTS history (
   type TEXT,
   flags TEXT
 );
+CREATE INDEX IF NOT EXISTS history_ip_ts ON history(ip, ts);
+CREATE INDEX IF NOT EXISTS history_ts ON history(ts);
 CREATE TABLE IF NOT EXISTS watches (
   id TEXT PRIMARY KEY,
   target TEXT,
@@ -186,25 +215,42 @@ func boolInt(b bool) int {
 	return 0
 }
 
-// AddHistory records a daily snapshot and returns true when the type or ASN changed.
+// AddHistory records a local observation with unknown legacy provenance.
 func (s *Store) AddHistory(ip, prefix, cc, typ, flags string, asn int, ts time.Time) (bool, error) {
+	return s.AddHistoryWithProvenance(ip, prefix, cc, typ, flags, asn, ts, nil)
+}
+
+// AddHistoryWithProvenance records an observation; nil provenance means unknown.
+func (s *Store) AddHistoryWithProvenance(ip, prefix, cc, typ, flags string, asn int, ts time.Time, provenance json.RawMessage) (bool, error) {
+	if len(provenance) > 0 && !json.Valid(provenance) {
+		return false, fmt.Errorf("invalid provenance JSON")
+	}
 	var prevType, prevCC string
 	var prevASN int
-	err := s.DB.QueryRow(`SELECT asn, cc, type FROM history WHERE ip=? ORDER BY ts DESC LIMIT 1`, ip).Scan(&prevASN, &prevCC, &prevType)
+	err := s.DB.QueryRow(`SELECT asn, cc, type FROM history WHERE ip=? ORDER BY ts DESC, id DESC LIMIT 1`, ip).Scan(&prevASN, &prevCC, &prevType)
 	changed := false
 	if err == nil {
 		changed = prevASN != asn || prevCC != cc || prevType != typ
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
-	_, err = s.DB.Exec(`INSERT INTO history(ip, prefix, ts, asn, cc, type, flags) VALUES(?,?,?,?,?,?,?)`,
-		ip, prefix, ts.Unix(), asn, cc, typ, flags)
+	_, err = s.DB.Exec(`INSERT INTO history(ip, prefix, ts, asn, cc, type, flags, provenance) VALUES(?,?,?,?,?,?,?,?)`,
+		ip, prefix, ts.Unix(), asn, cc, typ, flags, nullableJSON(provenance))
 	return changed, err
 }
 
 // History lists events derived from successive snapshots.
 func (s *Store) History(ip string, since time.Time) ([]Event, error) {
-	rows, err := s.DB.Query(`SELECT ts, asn, cc, type, flags FROM history WHERE ip=? AND ts>=? ORDER BY ts`, ip, since.Unix())
+	return s.historyUntil(ip, since, 1<<63-1)
+}
+
+// HistoryUntil excludes future-dated observations from a local evidence window.
+func (s *Store) HistoryUntil(ip string, since, until time.Time) ([]Event, error) {
+	return s.historyUntil(ip, since, until.Unix())
+}
+
+func (s *Store) historyUntil(ip string, since time.Time, until int64) ([]Event, error) {
+	rows, err := s.DB.Query(`SELECT ts, asn, cc, type, flags FROM history WHERE ip=? AND ts>=? AND ts<=? ORDER BY ts, id`, ip, since.Unix(), until)
 	if err != nil {
 		return nil, err
 	}
@@ -221,6 +267,9 @@ func (s *Store) History(ip string, since time.Time) ([]Event, error) {
 			return nil, err
 		}
 		snaps = append(snaps, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	var ev []Event
 	for i := 1; i < len(snaps); i++ {
