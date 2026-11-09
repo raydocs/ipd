@@ -7,6 +7,66 @@
   var local = document.getElementById("local");
   var localtext = document.getElementById("localtext");
   var lastEgress = [];
+  var requestVersion = 0;
+  var shareArtifact = null;
+  function clearReport() {
+    shareArtifact = null;
+    document.getElementById("share-opt-in").checked = false;
+    document.getElementById("share-download").disabled = true;
+    document.getElementById("geo-map").hidden = true;
+    document.getElementById("report-facts").textContent = "";
+    document.getElementById("map-note").textContent = "没有可核验坐标。不会用 (0,0) 代替未知。";
+  }
+  function renderEvidence(rep) {
+    clearReport();
+    if (!window.ipdReport) return;
+    var model = window.ipdReport.model(rep);
+    var facts = document.getElementById("report-facts");
+    model.facts.forEach(function (fact) {
+      var card = document.createElement("div"); card.className = "fact";
+      var label = document.createElement("p"); label.textContent = fact.label;
+      var value = document.createElement("strong"); value.textContent = fact.value;
+      card.appendChild(label); card.appendChild(value); facts.appendChild(card);
+    });
+    if (model.point) {
+      var marker = document.getElementById("geo-marker");
+      marker.setAttribute("cx", model.point.x); marker.setAttribute("cy", model.point.y);
+      document.getElementById("geo-map").hidden = false;
+      document.getElementById("map-note").textContent = "数据库地理坐标示意，不是设备位置或精确定位；请在原始证据中核对来源与时效。";
+    }
+    shareArtifact = window.ipdReport.shareSVG(rep);
+    verdict.textContent = model.label;
+  }
+  function requestReport(url, callerEgress) {
+    var version = ++requestVersion;
+    clearReport();
+    out.hidden = false;
+    verdict.textContent = "正在读取证据";
+    summary.textContent = "未知或缺源不会被当作通过。";
+    return fetch(url, { headers: { Accept: "application/json" } })
+      .then(function (r) { if (!r.ok) throw new Error("request failed"); return r.json(); })
+      .then(function (rep) { if (version === requestVersion) show(rep, callerEgress); })
+      .catch(function () {
+        if (version !== requestVersion) return;
+        clearReport(); verdict.textContent = "查询失败"; summary.textContent = "未取得有效报告；请检查公网 IP 或稍后重试。";
+        detail.textContent = ""; document.getElementById("comparison-results").hidden = true;
+      });
+  }
+  document.getElementById("share-opt-in").addEventListener("change", function () {
+    document.getElementById("share-download").disabled = !this.checked || !shareArtifact;
+  });
+  document.getElementById("share-download").addEventListener("click", function () {
+    if (!document.getElementById("share-opt-in").checked || !shareArtifact) return;
+    var url = URL.createObjectURL(new Blob([shareArtifact], {type:"image/svg+xml"}));
+    var link = document.createElement("a"); link.href = url; link.download = "ipd-hidden-evidence.svg";
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  });
+  document.getElementById("lookup").addEventListener("click", function () {
+    var ip = document.getElementById("ip").value.trim();
+    if (!ip) { ++requestVersion; clearReport(); out.hidden = false; summary.textContent = "请先输入公网 IP；不会自动向第三方发起位置请求。"; return; }
+    requestReport("/v1/ip/" + encodeURIComponent(ip), false);
+  });
 
   function show(rep, callerEgress) {
     out.hidden = false;
@@ -31,30 +91,22 @@
     });
     var ip = rep.data && (rep.data.ip || (rep.data.ipv4));
     if (callerEgress && ip) lastEgress = [ip];
+    renderEvidence(rep);
   }
 
   form.addEventListener("submit", function (ev) {
     ev.preventDefault();
     var ip = document.getElementById("ip").value.trim();
     var url = ip ? "/v1/ip/" + encodeURIComponent(ip) + "/risk?live=0" : "/v1/me";
-    fetch(url, { headers: { Accept: "application/json" } })
-      .then(function (r) { return r.json(); })
-      .then(function (rep) { show(rep, !ip); })
-      .catch(function (err) {
-        out.hidden = false;
-        verdict.textContent = "查询失败";
-        summary.textContent = String(err);
-      });
+    requestReport(url, !ip);
   });
 
   document.getElementById("compare").addEventListener("submit", function (ev) {
     ev.preventDefault();
     var ip = document.getElementById("ip").value.trim();
-    if (!ip) { out.hidden = false; summary.textContent = "请输入公网 IP；不自动推断并向第三方发送本机地址。"; return; }
+    if (!ip) { ++requestVersion; clearReport(); out.hidden = false; summary.textContent = "请输入公网 IP；不自动推断并向第三方发送本机地址。"; return; }
     var live = document.getElementById("compare-live").checked ? "1" : "0";
-    fetch("/v1/ip/" + encodeURIComponent(ip) + "/compare?live=" + live, { headers: { Accept: "application/json" } })
-      .then(function (r) { if (!r.ok) throw new Error("comparison failed"); return r.json(); })
-      .then(show).catch(function () { out.hidden = false; summary.textContent = "对比失败：需要有效公网 IP。"; });
+    requestReport("/v1/ip/" + encodeURIComponent(ip) + "/compare?live=" + live, false);
   });
 
   document.getElementById("tz").addEventListener("click", function () {
