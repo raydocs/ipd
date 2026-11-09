@@ -40,14 +40,24 @@ matched record metadata from the existing lookup source evidence. [] means no
 source hits, NOT a clean result. Observation timestamps are local recording times,
 not upstream observation/update times; per-source dataset versions are not yet
 persisted. Events describe adjacent local field differences only.
-New app writes canonicalize IP text; legacy noncanonical spellings are not migrated.
+All public history store writes canonicalize/unmap IP text and reject zone-qualified
+addresses. Compatibility reads canonicalize legacy stored keys without rewriting
+rows, timestamps, ordering or provenance. Observations, History/HistoryUntil and
+LocalNeighbors share this identity rule. Latest neighbors are selected per canonical
+address by (ts,id), including aliases and same-second ties.
+
+The API derives snapshots, events and aggregate neighbors from one streaming SELECT
+and thus one SQLite read snapshot, even if another Store commits during iteration.
+Only target snapshots and aggregate neighbor counts leave that view. The additive
+migration obtains a dedicated connection, begins IMMEDIATE, then inspects and alters
+the schema under the write lock; errors roll back and are propagated.
 
 ## Watch boundary and remaining work
 The existing Watch create/list/delete/due-run skeleton is unchanged. There is no
 new actual scheduler, webhook dispatch, default network activity, scan or download.
 Retention-at-idle, source version capture, retention operation metrics, pagination
 and indexed address-range neighbor aggregation remain future work. Neighbor
-aggregation currently examines latest rows in the retained window; large stores
+aggregation currently scans rows in the retained window for canonical aggregation; large stores
 need scale validation. No raw neighbor IPs are exposed, but aggregates are not
 anonymity guarantees or a multi-tenant authorization boundary.
 
@@ -77,3 +87,21 @@ Session check results:
 - node --test web/judge.test.mjs: PASS.
 - Public-network live coverage is deliberately not claimed; external networking
   was blocked for the full suite. Independent diff review remains pending.
+
+## PR36 R1 bounded correction evidence
+The original candidate dbd0cda was executed with the unchanged R1 overlay: all four
+reported classes failed (legacy IPv6, alias neighbor counts, cross-commit response,
+and concurrent duplicate-column migration). Log: /tmp/ipd-pr36-before.log.
+New committed deterministic tests were also executed against original production
+files via overlay: canonical/mapped public reads, genuine first-row interleaving,
+and concurrent legacy Open failed. The interleaving fixture steps a real SQLite
+row, commits through another Store, checks the first response against its old view,
+and checks that the next response sees the commit; no SQL/results are rewritten.
+Log: /tmp/ipd-pr36-correction/new-tests-old-code.log.
+
+Correction checks: narrow history tests and targeted store/app/api/config race PASS.
+Full Go (`go test -p 1 ./...`) and Node (`node --test web/judge.test.mjs`) PASS; results are recorded in /tmp/ipd-pr36-correction/ (full.log,
+node.log); external network access is blocked, loopback allowed for local fixtures.
+The literal `go test -p1 ./...` fails with “no Go files”; the supported equivalent
+`go test -p 1 ./...` is used for the full suite. No independent R2 acceptance is
+claimed; fresh review and combined verification remain with the root owner.

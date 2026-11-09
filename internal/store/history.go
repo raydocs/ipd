@@ -39,27 +39,34 @@ type Observation struct {
 	Provenance json.RawMessage `json:"provenance"`
 }
 
+func historyAddr(ip string) (netip.Addr, error) {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil || addr.Zone() != "" {
+		return netip.Addr{}, fmt.Errorf("invalid history IP %q", ip)
+	}
+	return addr.Unmap(), nil
+}
+
 func (s *Store) Observations(ip string, since, until time.Time) ([]Observation, error) {
-	rows, err := s.DB.Query("SELECT ts,prefix,asn,cc,type,flags,provenance FROM history WHERE ip=? AND ts>=? AND ts<=? ORDER BY ts,id", ip, since.Unix(), until.Unix())
+	addr, err := historyAddr(ip)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []Observation{}
-	for rows.Next() {
-		var o Observation
-		var ts int64
-		var raw *string
-		if err := rows.Scan(&ts, &o.Prefix, &o.ASN, &o.CC, &o.Type, &o.Flags, &raw); err != nil {
-			return nil, err
-		}
-		o.TS = time.Unix(ts, 0).UTC()
-		if raw != nil {
-			o.Provenance = json.RawMessage(*raw)
-		}
-		out = append(out, o)
+	out, _, err := s.readHistory(addr, netip.Prefix{}, since.Unix(), until.Unix())
+	return out, err
+}
+
+// HistoryView derives all response components from one SQLite statement snapshot.
+func (s *Store) HistoryView(ip string, prefix netip.Prefix, since, until time.Time) ([]Observation, []Event, LocalNeighbors, error) {
+	addr, err := historyAddr(ip)
+	if err != nil {
+		return nil, nil, LocalNeighbors{}, err
 	}
-	return out, rows.Err()
+	snaps, neighbors, err := s.readHistory(addr, prefix, since.Unix(), until.Unix())
+	if err != nil {
+		return nil, nil, neighbors, err
+	}
+	return snaps, historyEvents(snaps), neighbors, nil
 }
 
 // LocalNeighbors reports aggregate latest observations in an address bucket.
@@ -71,28 +78,58 @@ type LocalNeighbors struct {
 }
 
 func (s *Store) LocalNeighbors(prefix netip.Prefix, since, until time.Time) (LocalNeighbors, error) {
-	out := LocalNeighbors{Prefix: prefix.Masked().String(), Types: map[string]int{}}
-	rows, err := s.DB.Query(`SELECT h.ip,h.type FROM history h WHERE h.ts>=? AND h.ts<=?
- AND NOT EXISTS (SELECT 1 FROM history newer WHERE newer.ip=h.ip AND newer.ts>=? AND newer.ts<=?
- AND (newer.ts>h.ts OR (newer.ts=h.ts AND newer.id>h.id)))`, since.Unix(), until.Unix(), since.Unix(), until.Unix())
+	_, out, err := s.readHistory(netip.Addr{}, prefix, since.Unix(), until.Unix())
+	return out, err
+}
+
+// Scan in (ts,id) order: overwriting a canonical address selects its latest
+// observation even when old rows used expanded IPv6 or IPv4-mapped keys.
+// Only the target snapshots and aggregate neighbor types leave this read view.
+func (s *Store) readHistory(target netip.Addr, prefix netip.Prefix, since, until int64) ([]Observation, LocalNeighbors, error) {
+	out := []Observation{}
+	neighbors := LocalNeighbors{Prefix: prefix.Masked().String(), Types: map[string]int{}}
+	rows, err := s.DB.Query(`SELECT ip,ts,prefix,asn,cc,type,flags,provenance FROM history WHERE ts>=? AND ts<=? ORDER BY ts,id`, since, until)
 	if err != nil {
-		return out, err
+		return nil, neighbors, err
 	}
 	defer rows.Close()
+	latest := map[netip.Addr]string{}
 	for rows.Next() {
-		var ip, typ string
-		if err := rows.Scan(&ip, &typ); err != nil {
-			return out, err
+		var ip string
+		var ts int64
+		var o Observation
+		var raw *string
+		if err := rows.Scan(&ip, &ts, &o.Prefix, &o.ASN, &o.CC, &o.Type, &o.Flags, &raw); err != nil {
+			return nil, neighbors, err
 		}
-		addr, err := netip.ParseAddr(ip)
-		if err != nil || !prefix.Contains(addr.Unmap()) {
+		addr, err := historyAddr(ip)
+		if err != nil {
 			continue
+		} // Unparseable legacy keys are not address evidence.
+		o.TS = time.Unix(ts, 0).UTC()
+		if raw != nil {
+			o.Provenance = json.RawMessage(*raw)
 		}
-		if typ == "" {
-			typ = "unknown"
+		if addr == target {
+			out = append(out, o)
 		}
-		out.ObservedAddresses++
-		out.Types[typ]++
+		if prefix.Contains(addr) {
+			typ := o.Type
+			if typ == "" {
+				typ = "unknown"
+			}
+			latest[addr] = typ
+		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, neighbors, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, neighbors, err
+	}
+	for _, typ := range latest {
+		neighbors.ObservedAddresses++
+		neighbors.Types[typ]++
+	}
+	return out, neighbors, nil
 }

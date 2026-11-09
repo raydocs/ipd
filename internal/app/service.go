@@ -413,16 +413,8 @@ func (s *Service) History(ip string, days int) (Report, error) {
 	if cut := now.Add(-retention); since.Before(cut) {
 		since = cut
 	}
-	snapshots, err := s.DB.Observations(ip, since, now)
-	if err != nil {
-		return Report{}, err
-	}
-	ev, err := s.DB.HistoryUntil(ip, since, now)
-	if err != nil {
-		return Report{}, err
-	}
 	bucket, _ := netip.ParsePrefix(prefix24(addr.Unmap()))
-	neighbors, err := s.DB.LocalNeighbors(bucket, since, now)
+	snapshots, ev, neighbors, err := s.DB.HistoryView(ip, bucket, since, now)
 	if err != nil {
 		return Report{}, err
 	}
