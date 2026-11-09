@@ -34,3 +34,7 @@ TLS fixture隔离子进程，不污染全套信任根。分支全Go、全部Node
 真实provider/key/公网未验证；CI本阶段未查询，保持Draft不合并。最终候选组合复测进行中。
 下一步：记录组合结果后验收限定增量，再补未完成provider adapter，之后既定UI等批次；不重复runner大PR。
 精确耗时未记录。无用户决策阻塞。
+
+2026-11-08 #32限定增量验收：head93a6288。最终组合main+#13/#15/#20/#22及已验收节点链、
+#28/#29/#30/#31/#32，全Go、Node11/11、providers/app/api/lookup race通过。
+该结论取代上段“组合进行中”；保持Draft。下一单元优先补pending provider adapter，无真实key/公网验证。

@@ -197,3 +197,11 @@ R2新增备用Transport清理与zone校验由总控限定修复；真实旧码�
 zone在Unmap前拒绝。隔离TLS子进程回归、全Go/全部Node及providers/app/api/lookup race通过。
 最终候选组合仍复测中；尚未整体验收。日志 `/tmp/ipd-pr32-fix-20261108/r2-*.log`。
 代码及本地测试不代表真实provider schema/额度/许可、真实key或公网验证；本阶段未调用真实服务。
+
+### #32 最终组合验收
+
+`93a6288` 限定增量验收，保持Draft、不合并。上述最终候选组合全Go、Node11/11及
+providers/app/api/lookup race通过（app82.185s、api37.813s）；日志
+`/tmp/ipd-pr32-fix-20261108/r2-combo-{go,node,race}.log`。
+本结论取代上段“尚未整体验收”，不改变四项pending缺口或真实provider/浏览器/线上未验证的边界。
+下一独立增量继续补pending适配器，不能据此宣称七源全部完成。
