@@ -34,7 +34,7 @@ func TestCompareLocalContract(t *testing.T) {
 			}
 		}
 	}
-	for _, ip := range []string{"bad", "127.0.0.1", "192.0.2.1", "::1", "::ffff:127.0.0.1"} {
+	for _, ip := range []string{"bad", "127.0.0.1", "192.0.2.1", "::1", "::ffff:127.0.0.1", "::ffff:1.1.1.1%en0"} {
 		if _, err := s.Compare(context.Background(), ip, true); err == nil {
 			t.Fatal(ip)
 		}

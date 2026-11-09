@@ -14,11 +14,13 @@ import (
 // Compare is separate from Risk: it neither feeds purity nor records history.
 func (s *Service) Compare(ctx context.Context, ip string, live bool) (Report, error) {
 	addr, err := netip.ParseAddr(ip)
-	addr = addr.Unmap()
-	if err != nil || addr.Zone() != "" || !privacy.IsPublic(addr) {
+	if err != nil || addr.Zone() != "" {
 		return Report{}, fmt.Errorf("public IP required")
 	}
 	addr = addr.Unmap()
+	if !privacy.IsPublic(addr) {
+		return Report{}, fmt.Errorf("public IP required")
+	}
 	offline := s.Cfg == nil || s.Cfg.Offline
 	var keys map[string]string
 	if s.Cfg != nil {
@@ -35,6 +37,7 @@ func (s *Service) Compare(ctx context.Context, ip string, live bool) (Report, er
 	}
 	if client == nil {
 		client = &http.Client{Transport: &http.Transport{Proxy: proxy, DisableCompression: true}}
+		defer client.CloseIdleConnections()
 	}
 	rows := providers.CompareOnline(ctx, addr, keys, live, offline, client)
 	p, metadata := s.Look.LookupWithSources(addr, s.now())
