@@ -1,0 +1,13 @@
+{
+  "schema_version": "residential-evaluation/v1",
+  "id": "metric-accounting-synthetic",
+  "revision": "v1",
+  "group_rationale": "Each group is a distinct invented scenario, not an IP, household or ASN. No sampled population exists.",
+  "split_rationale": "All four scenarios are test-only accounting fixtures. There is no training split and no independent held-out accuracy claim.",
+  "rows": [
+    {"id":"cloud-proxy","group":"scenario-a","split":"test","label":"hosting","provenance":{"kind":"synthetic","reference":"authored fixture scenario A","label_method":"Invented hosting endpoint with cloud and proxy indicators."},"features":{"cloud_hit":1,"vpn":1}},
+    {"id":"misleading-enterprise","group":"scenario-b","split":"test","label":"hosting","provenance":{"kind":"synthetic","reference":"authored fixture scenario B","label_method":"Counterfactual hosting endpoint with misleading enterprise metadata; intentional classification error for metric accounting, not a verified real label."},"features":{"as_business":1,"geo_disagree":1}},
+    {"id":"missing-evidence","group":"scenario-c","split":"test","label":"residential_fixed","provenance":{"kind":"synthetic","reference":"authored fixture scenario C","label_method":"Invented fixed residential endpoint with all observations withheld; known synthetic truth tests abstention accounting."},"features":{}},
+    {"id":"mobile-proxy","group":"scenario-d","split":"test","label":"residential_mobile","provenance":{"kind":"synthetic","reference":"authored fixture scenario D","label_method":"Invented mobile endpoint with proxy indicator."},"features":{"as_mobile":1,"vpn":1}}
+  ]
+}

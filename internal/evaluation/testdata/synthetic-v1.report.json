@@ -1,0 +1,222 @@
+{
+  "schema_version": "residential-evaluation/v1",
+  "dataset_id": "metric-accounting-synthetic",
+  "dataset_revision": "v1",
+  "dataset_sha256": "df654f5a770aeefc0da1a777cbe81dd182407382a2cc08498460a3cf22d17b23",
+  "model_version": "residential-2026.11.0",
+  "split": "test",
+  "interpretation": "Dataset-conditional results only; synthetic rows are regression checks, not measured population accuracy. Public provenance alone does not establish a representative population estimate.",
+  "provenance_counts": {
+    "public": 0,
+    "synthetic": 4
+  },
+  "total": 4,
+  "decided": 3,
+  "abstained": 1,
+  "correct": 2,
+  "labels": [
+    "residential_fixed",
+    "residential_mobile",
+    "isp_static",
+    "business",
+    "hosting",
+    "cdn_anycast"
+  ],
+  "prediction_labels": [
+    "residential_fixed",
+    "residential_mobile",
+    "isp_static",
+    "business",
+    "hosting",
+    "cdn_anycast",
+    "abstain"
+  ],
+  "confusion": {
+    "business": {
+      "abstain": 0,
+      "business": 0,
+      "cdn_anycast": 0,
+      "hosting": 0,
+      "isp_static": 0,
+      "residential_fixed": 0,
+      "residential_mobile": 0
+    },
+    "cdn_anycast": {
+      "abstain": 0,
+      "business": 0,
+      "cdn_anycast": 0,
+      "hosting": 0,
+      "isp_static": 0,
+      "residential_fixed": 0,
+      "residential_mobile": 0
+    },
+    "hosting": {
+      "abstain": 0,
+      "business": 1,
+      "cdn_anycast": 0,
+      "hosting": 1,
+      "isp_static": 0,
+      "residential_fixed": 0,
+      "residential_mobile": 0
+    },
+    "isp_static": {
+      "abstain": 0,
+      "business": 0,
+      "cdn_anycast": 0,
+      "hosting": 0,
+      "isp_static": 0,
+      "residential_fixed": 0,
+      "residential_mobile": 0
+    },
+    "residential_fixed": {
+      "abstain": 1,
+      "business": 0,
+      "cdn_anycast": 0,
+      "hosting": 0,
+      "isp_static": 0,
+      "residential_fixed": 0,
+      "residential_mobile": 0
+    },
+    "residential_mobile": {
+      "abstain": 0,
+      "business": 0,
+      "cdn_anycast": 0,
+      "hosting": 0,
+      "isp_static": 0,
+      "residential_fixed": 0,
+      "residential_mobile": 1
+    }
+  },
+  "classes": {
+    "business": {
+      "support": 0,
+      "predicted": 1,
+      "precision": {
+        "numerator": 0,
+        "denominator": 1,
+        "value": 0
+      },
+      "recall": {
+        "numerator": 0,
+        "denominator": 0,
+        "value": null
+      }
+    },
+    "cdn_anycast": {
+      "support": 0,
+      "predicted": 0,
+      "precision": {
+        "numerator": 0,
+        "denominator": 0,
+        "value": null
+      },
+      "recall": {
+        "numerator": 0,
+        "denominator": 0,
+        "value": null
+      }
+    },
+    "hosting": {
+      "support": 2,
+      "predicted": 1,
+      "precision": {
+        "numerator": 1,
+        "denominator": 1,
+        "value": 1
+      },
+      "recall": {
+        "numerator": 1,
+        "denominator": 2,
+        "value": 0.5
+      }
+    },
+    "isp_static": {
+      "support": 0,
+      "predicted": 0,
+      "precision": {
+        "numerator": 0,
+        "denominator": 0,
+        "value": null
+      },
+      "recall": {
+        "numerator": 0,
+        "denominator": 0,
+        "value": null
+      }
+    },
+    "residential_fixed": {
+      "support": 1,
+      "predicted": 0,
+      "precision": {
+        "numerator": 0,
+        "denominator": 0,
+        "value": null
+      },
+      "recall": {
+        "numerator": 0,
+        "denominator": 1,
+        "value": 0
+      }
+    },
+    "residential_mobile": {
+      "support": 1,
+      "predicted": 1,
+      "precision": {
+        "numerator": 1,
+        "denominator": 1,
+        "value": 1
+      },
+      "recall": {
+        "numerator": 1,
+        "denominator": 1,
+        "value": 1
+      }
+    }
+  },
+  "coverage": {
+    "numerator": 3,
+    "denominator": 4,
+    "value": 0.75
+  },
+  "abstention_rate": {
+    "numerator": 1,
+    "denominator": 4,
+    "value": 0.25
+  },
+  "accuracy_including_abstentions_as_errors": {
+    "numerator": 2,
+    "denominator": 4,
+    "value": 0.5
+  },
+  "accuracy_on_decided": {
+    "numerator": 2,
+    "denominator": 3,
+    "value": 0.6666666666666666
+  },
+  "predictions": [
+    {
+      "id": "cloud-proxy",
+      "label": "hosting",
+      "predicted": "hosting",
+      "confidence": 0.97
+    },
+    {
+      "id": "misleading-enterprise",
+      "label": "hosting",
+      "predicted": "business",
+      "confidence": 0.9161047784667921
+    },
+    {
+      "id": "missing-evidence",
+      "label": "residential_fixed",
+      "predicted": "abstain",
+      "confidence": 0.16666666666666666
+    },
+    {
+      "id": "mobile-proxy",
+      "label": "residential_mobile",
+      "predicted": "residential_mobile",
+      "confidence": 0.9
+    }
+  ]
+}
