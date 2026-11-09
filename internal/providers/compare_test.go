@@ -54,9 +54,9 @@ func TestComparisonPendingAdaptersNeverCall(t *testing.T) {
 		t.Fatal("pending adapter called")
 		return nil, context.Canceled
 	})}
-	rows := CompareOnline(context.Background(), netip.MustParseAddr("1.1.1.1"), map[string]string{"scamalytics": "secret", "ipapiis": "secret", "proxycheck": "secret"}, true, false, client)
+	rows := CompareOnline(context.Background(), netip.MustParseAddr("1.1.1.1"), map[string]string{"scamalytics": "secret", "proxycheck": "secret"}, true, false, client)
 	for _, r := range rows {
-		if r.ID != "ipqs" && r.ID != "abuseipdb" && r.Skipped != "schema_adapter_pending" {
+		if (r.ID == "scamalytics" || r.ID == "proxycheck") && r.Skipped != "schema_adapter_pending" {
 			t.Fatal(r)
 		}
 	}

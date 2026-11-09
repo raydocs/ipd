@@ -27,12 +27,12 @@ type Comparison struct {
 	ScoreMeaning string         `json:"score_meaning,omitempty"`
 }
 
-// CompareOnline deliberately ships only the two verified schemas in this draft.
+// CompareOnline normalizes only explicitly supported schemas.
 // Other adapters remain present in All; do not pretend their raw data is normalized.
 // Fixed official endpoints ignore configurable legacy bases to prevent credential forwarding.
 func CompareOnline(ctx context.Context, ip netip.Addr, keys map[string]string, live, offline bool, client *http.Client) []Comparison {
 	out := make([]Comparison, 0, 5)
-	bases := map[string]string{"ipqs": "https://ipqualityscore.com/api/json/ip", "abuseipdb": "https://api.abuseipdb.com/api/v2/check"}
+	bases := map[string]string{"ipqs": "https://ipqualityscore.com/api/json/ip", "abuseipdb": "https://api.abuseipdb.com/api/v2/check", "ipapiis": "https://api.ipapi.is/"}
 	for _, p := range All(keys, bases, client) {
 		if p.ID() != "scamalytics" && p.ID() != "ipqs" && p.ID() != "ipapiis" && p.ID() != "proxycheck" && p.ID() != "abuseipdb" {
 			continue
@@ -68,6 +68,9 @@ func CompareOnline(ctx context.Context, ip netip.Addr, keys map[string]string, l
 }
 
 func normalizeComparison(row Comparison, raw map[string]any, ip netip.Addr) Comparison {
+	if row.ID == "ipapiis" {
+		return normalizeIPAPIIS(row, raw, ip)
+	}
 	fail := func() Comparison {
 		row.Status = "error"
 		row.Error = "invalid_provider_response"
