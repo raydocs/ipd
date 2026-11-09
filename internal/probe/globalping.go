@@ -408,19 +408,20 @@ func decodeGP(doc gpDoc, q Query) []Sample {
 		if loss > 1 {
 			loss = loss / 100
 		}
-		probeFailed := r.Result.Status == "failed" && strings.TrimSpace(r.Result.Raw) == "" && r.Result.Stats.Avg == 0 && r.Result.Stats.Loss == 0 && len(r.Result.Hops) == 0 && len(r.Result.Answers) == 0
+		// Target results (including empty failed results) are not anchor checks.
 		id := strconv.Itoa(asn) + "/" + r.Probe.City
-		healthy := !probeFailed && DefaultHealth.Healthy(id)
-		DefaultHealth.Observe(id, !probeFailed)
+		history := DefaultHealth.Snapshot(id)
+		healthy := history.Failures < 3 || history.Samples-history.Failures >= history.Failures
 		s := Sample{
-			Provider: "globalping",
-			Network:  netw,
-			ASN:      asn,
-			City:     r.Probe.City,
-			Country:  r.Probe.Country,
-			Healthy:  healthy,
-			Loss:     loss,
-			RTTMS:    r.Result.Stats.Avg,
+			Provider:     "globalping",
+			Network:      netw,
+			ASN:          asn,
+			City:         r.Probe.City,
+			Country:      r.Probe.Country,
+			Healthy:      healthy,
+			AnchorHealth: history,
+			Loss:         loss,
+			RTTMS:        r.Result.Stats.Avg,
 		}
 		applyKind(&s, q, r)
 		if q.Kind == KindTrace {
@@ -511,9 +512,6 @@ func applyKind(s *Sample, q Query, r gpResult) {
 		s.ICMP = ""
 	case KindDNS:
 		s.ICMP = ""
-		if status == "failed" {
-			s.Healthy = true
-		}
 	case KindTrace, KindMTR:
 		if status == "failed" {
 			s.ICMP = "timeout"
