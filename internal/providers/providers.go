@@ -162,7 +162,7 @@ func (h HTTP) Lookup(ctx context.Context, ip netip.Addr) (map[string]any, error)
 	u, hdr := h.Build(h.Base, h.Key, ip.String())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid request")
 	}
 	for k, vs := range hdr {
 		for _, v := range vs {
@@ -174,18 +174,26 @@ func (h HTTP) Lookup(ctx context.Context, ip netip.Addr) (map[string]any, error)
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	safe := *client
+	if safe.Timeout <= 0 || safe.Timeout > 5*time.Second {
+		safe.Timeout = 5 * time.Second
+	}
+	safe.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := safe.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("request failed")
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode >= 300 {
+	b, readErr := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if readErr != nil || len(b) > 1<<20 {
+		return nil, fmt.Errorf("invalid response size")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("%s status %d", h.Name, resp.StatusCode)
 	}
 	var raw map[string]any
-	if err := json.Unmarshal(b, &raw); err != nil {
-		return nil, err
+	if err := json.Unmarshal(b, &raw); err != nil || raw == nil {
+		return nil, fmt.Errorf("invalid JSON object")
 	}
 	return raw, nil
 }
