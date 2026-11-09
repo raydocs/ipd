@@ -25,3 +25,12 @@ CI本阶段未查询；委派审查不是GitHub正式批准。真实浏览器/�
 2026-11-08：#31 head55ba82b验收，保持Draft。main及#23/#25/#26/#27逐分支nodes race全通过，
 组合nodes树等于#27且组合race通过；历史超时未复现、唯一根因未证实，保留负载敏感限制。
 证据/tmp/ipd-runner-diagnostic-20261108/；真实公网未验证、CFBotScore未知。下一步独立多源比较PR。
+
+2026-11-08 多源阶段：Draft #32 head93a6288，最新main仍3a08322。两轮独立审查；原五项修复，
+R2备用Transport连接清理及mapped-zone由总控限定修复。旧码实际留下6条连接，新码全部关闭；
+TLS fixture隔离子进程，不污染全套信任根。分支全Go、全部Node、providers/app/api/lookup race通过。
+本阶段代码：providers比较契约、app compare、lookup原子来源观察、API/schema、web比较与测试。
+完成范围仅IPQS/AbuseIPDB在线适配和IPinfo Lite快照；另外三在线适配及GeoLite独立MMDB观察pending。
+真实provider/key/公网未验证；CI本阶段未查询，保持Draft不合并。最终候选组合复测进行中。
+下一步：记录组合结果后验收限定增量，再补未完成provider adapter，之后既定UI等批次；不重复runner大PR。
+精确耗时未记录。无用户决策阻塞。

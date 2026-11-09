@@ -184,3 +184,16 @@ main（nodes 树无改）、#23 `8331260`、#25 `676aabf`、#26 `b81228e`、#27 
 结论限于：未复现历史失败、无#31 runner改动，证据支持无关的负载敏感抖动；唯一根因未证实。
 日志 `/tmp/ipd-runner-diagnostic-20261108/`，原失败继续保留，不宣称修好了runner缺陷。
 真实公网挑战页/账号/核心未验证，CF Bot Score保持null/unknown。下一独立Draft：可选key多源对比。
+
+## #32 可选多源比较：限定实现与验证（2026-11-08）
+
+Draft [#32](https://github.com/raydocs/ipd/pull/32)，head `93a6288`，base最新main `3a08322`。
+七源并列合同不等于七源适配完成：IPQS、AbuseIPDB可显式live调用，IPinfo Lite复用本地快照；
+Scamalytics、ipapi.is、proxycheck在线schema及GeoLite独立MMDB观察仍pending/unknown。
+无key、offline、未opt-in不请求，不混合不同来源分数，不宣称未知等于安全。
+
+两轮独立审查：原代理绕过、跨代来源配对、WebRTC出口污染、IPv6身份及mapped保留地址已闭环。
+R2新增备用Transport清理与zone校验由总控限定修复；真实旧码反证连接残留6条，新码0条，
+zone在Unmap前拒绝。隔离TLS子进程回归、全Go/全部Node及providers/app/api/lookup race通过。
+最终候选组合仍复测中；尚未整体验收。日志 `/tmp/ipd-pr32-fix-20261108/r2-*.log`。
+代码及本地测试不代表真实provider schema/额度/许可、真实key或公网验证；本阶段未调用真实服务。
