@@ -270,3 +270,11 @@ UI视觉委派因image-read hook未看截图，只静态检查，**不是截图/
 固定HTTPS、v3嵌套/布尔、唯一IP身份，warning受控保留、无raw/key输出；父版本反证实际FAIL，
 分支全Go/Node/race通过。独立审查与最终冻结组合待完成。完成后本批不再扩多源。
 四项修正加#38的最终冻结组合重跑中；#34第二轮、#36首轮仍待回，均不提前验收。
+
+### 双核心收尾的诚实边界
+
+见 [NODE-BACKEND-STATUS](NODE-BACKEND-STATUS.md)：#23/#25/#26/#27精确head仍分别为
+8331260/676aabf/b81228e/f698099，均Draft且当前MERGEABLE；总控组合nodes race通过46.478s。
+YAML→mihomo、原生JSON→sing-box、格式兼容强制选择及backend身份已有本地证据。
+跨格式自动转换/混合核心批次、ShadowTLS/WireGuard、逐节点纯净度、真实core及Linux运行未完成。
+这不是可宣称“全协议实测”的完成态，也不需要用户先做合并/上线决策才能继续后续实现。

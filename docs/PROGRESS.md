@@ -74,3 +74,7 @@ runner23/25/26/27代码及本地fixture已验收，真实core/Linux runtime/协�
 旧码反证FAIL、新分支窄/race/fullGo/Node通过。最终组合追加#38，UI consent一行精确整合保留四源名称。
 再次启动冻结组合全Go/Node/十包race；不把编译中修改过的上一批混合状态当作最终快照证据。
 #34 R2待回，#36 R1待回；#35限定组件本地验收。runner整包race46.478s已通过，协议转换/真实core仍缺。
+
+丹佛18:36 runner收尾矩阵已写docs/NODE-BACKEND-STATUS.md：四层精确head/本地fixture/race/mergeable，
+列出YAML→mihomo、JSON→sing-box、强制/身份；跨格式自动转换、ShadowTLS/WireGuard、逐节点纯净度、
+真实core/Linux运行仍缺。禁止把现有mock绿灯称作全协议检测完成。暂无新的runner代码改动/重复大PR。
